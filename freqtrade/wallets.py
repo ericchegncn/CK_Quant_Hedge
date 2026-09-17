@@ -42,7 +42,7 @@ class Wallets:
         self._is_backtest = is_backtest
         self._exchange = exchange
         self._wallets: dict[str, Wallet] = {}
-        self._positions: dict[str, PositionWallet] = {}
+        self._positions: dict[tuple[str, str], PositionWallet] = {}
         self._start_cap: dict[str, float] = {}
 
         self._stake_currency = self._exchange.get_proxy_coin()
@@ -94,14 +94,37 @@ class Wallets:
             )
         return self.get_total(self._stake_currency)
 
-    def get_owned(self, pair: str, base_currency: str) -> float:
+    @staticmethod
+    def position_key(symbol: str, side: str) -> tuple[str, str]:
+        """持仓簿的键：双向持仓下同一币种会同时有多空两笔，必须以 (币种, 方向) 为键。
+
+        方向取值 "long"/"short"，与 ccxt 的 position["side"] 及
+        Trade.trade_direction 保持一致。
+        """
+        return (symbol, side)
+
+    def get_position(self, symbol: str, side: str | None = None) -> PositionWallet | None:
+        """按 (币种, 方向) 取持仓。
+
+        不传 side 时：优先取多头，再退回该币种的任意一笔 —— 单向交易下该币种
+        至多一笔，因此该退化行为与旧实现完全等价。
+        """
+        if side:
+            return self._positions.get(self.position_key(symbol, side))
+        if pos := self._positions.get(self.position_key(symbol, "long")):
+            return pos
+        return next((p for (sym, _s), p in self._positions.items() if sym == symbol), None)
+
+    def get_owned(self, pair: str, base_currency: str, side: str | None = None) -> float:
         """
         Get currently owned value.
         Designed to work across both spot and futures.
+        In hedge mode the same pair can hold both a long and a short position,
+        so callers should pass `side` to disambiguate.
         """
         if self._config.get("trading_mode", "spot") != TradingMode.FUTURES:
             return self.get_total(base_currency) or 0
-        if pos := self._positions.get(pair):
+        if pos := self.get_position(pair, side):
             return pos.position
         return 0
 
@@ -147,7 +170,7 @@ class Wallets:
                 )
         else:
             for position in open_trades:
-                _positions[position.pair] = PositionWallet(
+                _positions[self.position_key(position.pair, position.trade_direction)] = PositionWallet(
                     position.pair,
                     position=position.amount,
                     leverage=position.leverage,
@@ -217,11 +240,14 @@ class Wallets:
             if not leverage:
                 if open_trade_leverage is None:
                     open_trade_leverage = {
-                        trade.pair: trade.leverage for trade in Trade.get_open_trades()
+                        self.position_key(trade.pair, trade.trade_direction): trade.leverage
+                        for trade in Trade.get_open_trades()
                     }
-                leverage = open_trade_leverage.get(symbol)
+                leverage = open_trade_leverage.get(
+                    self.position_key(symbol, position["side"])
+                )
             unrealized_pnl = float(position.get("unrealizedPnl") or 0.0)  # type: ignore[arg-type]
-            _parsed_positions[symbol] = PositionWallet(
+            _parsed_positions[self.position_key(symbol, position["side"])] = PositionWallet(
                 symbol,
                 position=size,
                 leverage=leverage,
@@ -288,7 +314,8 @@ class Wallets:
     def get_all_balances(self) -> dict[str, Wallet]:
         return self._wallets
 
-    def get_all_positions(self) -> dict[str, PositionWallet]:
+    def get_all_positions(self) -> dict[tuple[str, str], PositionWallet]:
+        """全部持仓，键为 (币种, 方向)。"""
         return self._positions
 
     def _check_exit_amount(self, trade: Trade) -> bool:
@@ -297,7 +324,7 @@ class Wallets:
             wallet_amount: float = self.get_total(trade.safe_base_currency) * (2 - 0.981)
         else:
             # wallet_amount: float = self.wallets.get_free(trade.safe_base_currency)
-            position = self._positions.get(trade.pair)
+            position = self.get_position(trade.pair, trade.trade_direction)
             if position is None:
                 # We don't own anything :O
                 return False

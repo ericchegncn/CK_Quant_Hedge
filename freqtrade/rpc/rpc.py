@@ -1448,9 +1448,9 @@ class RPC:
                     "is_position": False,
                 }
             )
-        symbol: str
         pos: PositionWallet
-        for symbol, pos in self._freqtrade.wallets.get_all_positions().items():
+        for _pos_key, pos in self._freqtrade.wallets.get_all_positions().items():
+            symbol: str = pos.symbol
             est_stake = pos.collateral
             pos_base = self._freqtrade.exchange.get_pair_base_currency(symbol)
             if pos.leverage and pos.position:
@@ -1728,12 +1728,15 @@ class RPC:
         # check if valid pair
 
         # check if pair already has an open pair
-        trade: Trade | None = Trade.get_trades(
-            [Trade.is_open.is_(True), Trade.pair == pair]
-        ).first()
         is_short = order_side == SignalDirection.SHORT
+        trade_filter = [Trade.is_open.is_(True), Trade.pair == pair]
+        if self._freqtrade.config.get("hedge_mode", False):
+            # 双向持仓：同一币种可能多空各一笔 —— 只按 pair 查会抓到错的那条腿。
+            # 反方向是要**新开一条腿**，不是对已有仓位加仓（加仓必须同方向）。
+            # 单向模式保持原行为：每币种最多一笔，附加方向条件等价于原查询。
+            trade_filter.append(Trade.is_short.is_(is_short))
+        trade: Trade | None = Trade.get_trades(trade_filter).first()
         if trade:
-            is_short = trade.is_short
             if not self._freqtrade.strategy.position_adjustment_enable:
                 raise RPCException(f"position for {pair} already open - id: {trade.id}")
             if trade.has_open_orders:
@@ -1769,7 +1772,7 @@ class RPC:
                 mode="pos_adjust" if trade else "initial",
             ):
                 Trade.commit()
-                trade = Trade.get_trades([Trade.is_open.is_(True), Trade.pair == pair]).first()
+                trade = Trade.get_trades(trade_filter).first()
                 return trade
             else:
                 raise RPCException(f"Failed to enter position for {pair}.")

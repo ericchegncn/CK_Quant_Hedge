@@ -247,6 +247,12 @@ CONF_SCHEMA = {
             "type": "string",
             "enum": MARGIN_MODES,
         },
+        "hedge_mode": {
+            "description": "Enable hedge mode: hold long and short positions on the same pair "
+                           "simultaneously. Requires exchange support and an account configured "
+                           "for dual-side positions. Disabled by default.",
+            "type": "boolean",
+        },
         "reduce_df_footprint": {
             "description": "Reduce DataFrame footprint by casting columns to float32/int32.",
             "type": "boolean",

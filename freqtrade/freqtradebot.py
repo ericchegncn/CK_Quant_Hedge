@@ -461,6 +461,47 @@ class FreqtradeBot(LoggingMixin):
         open_trades = Trade.get_open_trade_count()
         return max(0, self.config["max_open_trades"] - open_trades)
 
+    def _hedge_mode_enabled(self) -> bool:
+        """双向持仓开关（与 Exchange._hedge_mode_enabled 读同一配置项，默认关闭）。
+
+        槽位口径：`max_open_trades` 按**笔**计数（见 get_free_open_trades 用
+        Trade.get_open_trade_count）—— 双向模式下 N 条腿可以是同一币种的多空两笔，
+        每条腿各自占保证金、各自有止损风险，按笔计数才让敞口上限真实可控。
+        关闭时主循环行为与上游一致：一个币种只允许一笔持仓。
+        """
+        return bool(self.config.get("hedge_mode", False))
+
+    def _has_open_trade_for(self, pair: str, direction: str) -> bool:
+        """该 (币种, 方向) 是否已有持仓。
+
+        双向模式下同一币种允许两条腿，但**同向绝不允许两笔** —— 两笔同向记录会
+        指向同一个交易所仓位，平掉一笔就等于把另一笔的记录挂空。
+        """
+        return any(
+            trade.trade_direction == direction
+            for trade in Trade.get_trades_proxy(pair=pair, is_open=True)
+        )
+
+    def _filter_entry_candidates(self, whitelist: list[str]) -> list[str]:
+        """从开仓候选里剔除已被持仓占用的币种（原地修改并返回该列表）。
+
+        双向持仓：只有同一币种的**两个方向都被占用**时才剔除；仅占一个方向时保留为
+        候选，交给 create_trade 按方向裁决 —— 上游是无差别剔除，那正是"第二条腿
+        永远开不出来"的真正阀门。
+        单向模式保持原行为：任一方向有持仓即剔除。
+        """
+        hedge_mode = self._hedge_mode_enabled()
+        occupied: dict[str, set[str]] = {}
+        for trade in Trade.get_open_trades():
+            occupied.setdefault(trade.pair, set()).add(trade.trade_direction)
+        for pair, directions in occupied.items():
+            if pair not in whitelist:
+                continue
+            if not hedge_mode or {"long", "short"} <= directions:
+                whitelist.remove(pair)
+                logger.debug("Ignoring %s in pair whitelist", pair)
+        return whitelist
+
     def _iceberg_ready(self, trade: Trade, side: BuySell, interval: float) -> bool:
         orders = [order for order in trade.orders if order.ft_order_side == side]
         if any(order.ft_is_open for order in orders):
@@ -808,7 +849,9 @@ class FreqtradeBot(LoggingMixin):
             else:
                 trade.exit_reason = prev_exit_reason
                 total = (
-                    self.wallets.get_owned(trade.pair, trade.base_currency)
+                    self.wallets.get_owned(
+                        trade.pair, trade.base_currency, trade.trade_direction
+                    )
                     if trade.base_currency
                     else 0
                 )
@@ -882,11 +925,9 @@ class FreqtradeBot(LoggingMixin):
         if not whitelist:
             self.log_once("Active pair whitelist is empty.", logger.info)
             return trades_created
-        # Remove pairs for currently opened trades from the whitelist
-        for trade in Trade.get_open_trades():
-            if trade.pair in whitelist:
-                whitelist.remove(trade.pair)
-                logger.debug("Ignoring %s in pair whitelist", trade.pair)
+        # Remove pairs for currently opened trades from the whitelist.
+        # 双向持仓下这里保留"只占一个方向"的币种 —— 见 _filter_entry_candidates。
+        whitelist = self._filter_entry_candidates(whitelist)
 
         if not whitelist:
             self.log_once(
@@ -964,6 +1005,17 @@ class FreqtradeBot(LoggingMixin):
                     )
                 else:
                     self.log_once(f"Pair {pair} is currently locked.", logger.info)
+                return False
+
+            # 双向持仓的最终门禁：同一 (币种, 方向) 已有持仓则不得再开一笔。
+            # whitelist 过滤在双向模式下会保留只占一个方向的币种（否则第二条腿永远
+            # 开不出来），所以这里才是真正的安全点；单向模式保持原行为（此时
+            # whitelist 已把该币种剔除，本判断不会生效，行为与上游逐字节一致）。
+            if self._hedge_mode_enabled() and self._has_open_trade_for(pair, signal.value):
+                logger.debug(
+                    f"Can't open a new {signal.value} trade for {pair}: "
+                    "this direction already has an open trade."
+                )
                 return False
 
             stake_amount = self.wallets.get_trade_stake_amount(pair, self.config["max_open_trades"])
@@ -1235,6 +1287,8 @@ class FreqtradeBot(LoggingMixin):
             time_in_force=time_in_force,
             leverage=leverage,
             initial_order=trade is None,
+            # 双向持仓：开仓方向与订单方向精确对应（buy→LONG / sell→SHORT）
+            position_side="long" if side == "buy" else "short",
         )
         latency.mark("exchange_create_order")
         order_obj = Order.parse_from_ccxt_object(order, pair, side, amount, enter_limit_requested)
@@ -1851,6 +1905,8 @@ class FreqtradeBot(LoggingMixin):
                 order_types=self.strategy.order_types,
                 side=trade.exit_side,
                 leverage=trade.leverage,
+                # 双向持仓：止损属于该笔交易的那一侧（平多头仍是 LONG）
+                position_side=trade.trade_direction,
             )
 
             order_obj = Order.parse_from_ccxt_object(
@@ -2609,6 +2665,7 @@ class FreqtradeBot(LoggingMixin):
                 rate=limit,
                 leverage=trade.leverage,
                 reduceOnly=self.trading_mode == TradingMode.FUTURES,
+                position_side=trade.trade_direction,
                 time_in_force=time_in_force,
                 initial_order=False,
             )

@@ -714,6 +714,8 @@ def test_handle_stoploss_on_exchange_trailing(
         stop_price=stop_price[1],
         side=exit_side(is_short),
         leverage=1.0,
+        # 双向持仓改造：止损下单会带上该笔交易的方向
+        position_side="short" if is_short else "long",
     )
 
     # price fell below stoploss, so dry-run sells trade.
@@ -988,6 +990,8 @@ def test_handle_stoploss_on_exchange_custom_stop(
         stop_price=4.4 * 0.96 if not is_short else 0.95 * 1.04,
         side=exit_side(is_short),
         leverage=1.0,
+        # 双向持仓改造：止损下单会带上该笔交易的方向
+        position_side="short" if is_short else "long",
     )
 
     # price fell below stoploss, so dry-run sells trade.

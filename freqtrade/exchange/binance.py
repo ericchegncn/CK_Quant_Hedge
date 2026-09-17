@@ -130,7 +130,10 @@ class Binance(Exchange):
                 assets_margin = self._api.fapiPrivateGetMultiAssetsMargin()
                 self._log_exchange_response("multi_asset_margin", assets_margin)
                 msg = ""
-                if position_side.get("dualSidePosition") is True:
+                if (
+                    position_side.get("dualSidePosition") is True
+                    and not self._hedge_mode_enabled()
+                ):
                     msg += (
                         "\nHedge Mode is not supported by freqtrade. "
                         "Please change 'Position Mode' on your binance futures account."
@@ -351,12 +354,15 @@ class Binance(Exchange):
         if self.margin_mode == MarginMode.CROSS:
             mm_ex_1: float = 0.0
             upnl_ex_1: float = 0.0
-            pairs = [trade.pair for trade in open_trades]
+            pairs = list(dict.fromkeys(trade.pair for trade in open_trades))
             if self._config["runmode"] in ("live", "dry_run"):
                 funding_rates = self.fetch_funding_rates(pairs)
+            hedge_mode = self._hedge_mode_enabled()
             for trade in open_trades:
-                if trade.pair == pair:
-                    # Only "other" trades are considered
+                if trade.pair == pair and (not hedge_mode or trade.is_short == is_short):
+                    # Only "other" positions are considered (the position itself is contract 1).
+                    # 双向持仓下同币的反方向腿是**另一个**独立仓位，必须计入组合的
+                    # 维持保证金与未实现盈亏；关闭开关时保持上游行为：同币一律排除。
                     continue
                 if self._config["runmode"] in ("live", "dry_run"):
                     # funding_rates may be empty when the exchange throttles bulk

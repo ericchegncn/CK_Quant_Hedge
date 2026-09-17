@@ -164,3 +164,8 @@ desktop/dist/
 
 desktop/pnpm-lock.yaml
 desktop/pnpm-workspace.yaml
+
+# 会话交接件：含私人研究结论/回测数字/机器路径 —— 绝不入库
+.hermes.md
+# 双向持仓的内部开发计划（第三节含网格公式与策略设计）；公开的框架能力文档是 docs/hedge-mode.md
+docs/HEDGE_MODE_PLAN.md

@@ -47,6 +47,7 @@ class Kucoin(Exchange):
         time_in_force: str = "GTC",
         reduceOnly: bool = False,
         initial_order: bool = True,
+        position_side: str | None = None,
     ) -> CcxtOrder:
         res = super().create_order(
             pair=pair,
@@ -58,6 +59,7 @@ class Kucoin(Exchange):
             reduceOnly=reduceOnly,
             time_in_force=time_in_force,
             initial_order=initial_order,
+            position_side=position_side,
         )
         # Kucoin returns only the order-id.
         # ccxt returns status = 'closed' at the moment - which is information ccxt invented.

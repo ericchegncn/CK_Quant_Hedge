@@ -1437,7 +1437,8 @@ class Exchange:
         params = self._params.copy()
         if time_in_force != "GTC" and ordertype != "market":
             params.update({"timeInForce": time_in_force.upper()})
-        if reduceOnly:
+        # 双向持仓下不得发送 reduceOnly（交易所直接拒单），见 _reduce_only_param_allowed
+        if reduceOnly and self._reduce_only_param_allowed():
             params.update({"reduceOnly": True})
         return params
 
@@ -1447,6 +1448,43 @@ class Exchange:
             or (side == "buy" and self._api.options.get("createMarketBuyOrderRequiresPrice", False))
             or self._ft_has.get("marketOrderRequiresPrice", False)
         )
+
+    def _hedge_mode_enabled(self) -> bool:
+        """双向持仓开关。默认关闭 —— 关闭时下单行为与单向实现逐字节一致。"""
+        return bool(self._config.get("hedge_mode", False))
+
+    def _get_position_side(self, position_side: str | None) -> str | None:
+        """双向持仓下订单必须显式携带 positionSide。
+
+        关键：positionSide 由「这笔交易的方向」决定，与 buy/sell 无关 ——
+        平多头依然是 LONG，平空头依然是 SHORT。调用方传入的正是该方向。
+        关闭 hedge_mode 或未传入方向时返回 None，此时不把该字段放进参数。
+        """
+        if not self._hedge_mode_enabled() or position_side is None:
+            return None
+        return position_side.upper()
+
+    def _reduce_only_param_allowed(self) -> bool:
+        """是否允许把 reduceOnly 放进下单参数。
+
+        币安官方对双向持仓（Hedge Mode）明确禁止该字段：
+        "reduceOnly: Cannot be sent in Hedge Mode" —— 带上就是拒单。
+        双向模式下平仓意图完全由 side + positionSide 表达，语义等价
+        （平多用 SELL+LONG，平空用 BUY+SHORT），所以这里只是不再发送该参数，
+        reduceOnly 这个入参本身仍然表示"这是一笔平仓单"（影响杠杆预置等行为）。
+        """
+        return not self._hedge_mode_enabled()
+
+    def _rate_cache_key(self, pair: str, is_short: bool) -> Any:
+        """行情缓存键。
+
+        单向模式下键就是币种（与上游完全一致）；双向模式下同一币种多空两笔可能
+        同时在场，而取价方向取决于这笔交易是多是空（默认 exit long 取 ask、
+        exit short 取 bid），共用一个键会让一条腿读到另一条腿的价 —— 所以键要带方向。
+        """
+        if self._hedge_mode_enabled():
+            return (pair, "short" if is_short else "long")
+        return pair
 
     def create_order(
         self,
@@ -1460,6 +1498,7 @@ class Exchange:
         time_in_force: str = "GTC",
         reduceOnly: bool = False,
         initial_order: bool = True,
+        position_side: str | None = None,
     ) -> CcxtOrder:
         if self._config["dry_run"]:
             dry_order = self.create_dry_run_order(
@@ -1468,6 +1507,11 @@ class Exchange:
             return dry_order
 
         params = self._get_params(side, ordertype, leverage, reduceOnly, time_in_force)
+
+        # 双向持仓：每笔订单必须带 positionSide；单向模式下为 None，参数不变
+        positionside = self._get_position_side(position_side)
+        if positionside:
+            params["positionSide"] = positionside
 
         try:
             # Set the precision for amount and price(rate) as accepted by the exchange
@@ -1575,6 +1619,26 @@ class Exchange:
         params.update({self._ft_has["stop_price_param"]: stop_price})
         return params
 
+    def _get_stoploss_futures_params(self, order_types: dict) -> dict:
+        """止损单在期货模式下的额外参数（非期货模式返回空字典）。
+
+        双向持仓下**不得**发送 reduceOnly —— 币安直接拒单
+        （"reduceOnly: Cannot be sent in Hedge Mode"）。止损单的平仓意图已由
+        side + positionSide 表达（LONG 侧挂 SELL、SHORT 侧挂 BUY），语义等价，
+        所以双向模式下只是不再发送该参数；单向模式照旧发送，逐字节不变。
+        """
+        params: dict = {}
+        if self.trading_mode != TradingMode.FUTURES:
+            return params
+        if self._reduce_only_param_allowed():
+            params["reduceOnly"] = True
+        if "stoploss_price_type" in order_types and "stop_price_type_field" in self._ft_has:
+            price_type = self._ft_has["stop_price_type_value_mapping"][
+                order_types.get("stoploss_price_type", PriceType.LAST)
+            ]
+            params[self._ft_has["stop_price_type_field"]] = price_type
+        return params
+
     @retrier(retries=0)
     def create_stoploss(
         self,
@@ -1584,6 +1648,7 @@ class Exchange:
         order_types: dict,
         side: BuySell,
         leverage: float,
+        position_side: str | None = None,
     ) -> CcxtOrder:
         """
         creates a stoploss order.
@@ -1629,13 +1694,12 @@ class Exchange:
             params = self._get_stop_params(
                 side=side, ordertype=ordertype, stop_price=stop_price_norm
             )
-            if self.trading_mode == TradingMode.FUTURES:
-                params["reduceOnly"] = True
-                if "stoploss_price_type" in order_types and "stop_price_type_field" in self._ft_has:
-                    price_type = self._ft_has["stop_price_type_value_mapping"][
-                        order_types.get("stoploss_price_type", PriceType.LAST)
-                    ]
-                    params[self._ft_has["stop_price_type_field"]] = price_type
+            params.update(self._get_stoploss_futures_params(order_types))
+
+            # 双向持仓：止损单同样必须带 positionSide，漏掉会被交易所拒单
+            positionside = self._get_position_side(position_side)
+            if positionside:
+                params["positionSide"] = positionside
 
             amount = self.amount_to_precision(pair, self._amount_to_contracts(pair, amount))
 
@@ -2294,9 +2358,11 @@ class Exchange:
         cache_rate: FtTTLCache = (
             self._entry_rate_cache if side == "entry" else self._exit_rate_cache
         )
+        # 双向模式下同一币种多空两笔共存，取价方向不同 → 缓存键必须带方向
+        cache_key = self._rate_cache_key(pair, is_short)
         if not refresh:
             with self._cache_lock:
-                rate = cache_rate.get(pair)
+                rate = cache_rate.get(cache_key)
             # Check if cache has been invalidated
             if rate:
                 logger.debug(f"Using cached {side} rate for {pair}.")
@@ -2320,7 +2386,7 @@ class Exchange:
         if rate is None:
             raise PricingError(f"{name}-Rate for {pair} was empty.")
         with self._cache_lock:
-            cache_rate[pair] = rate
+            cache_rate[cache_key] = rate
 
         return rate
 
@@ -2374,10 +2440,12 @@ class Exchange:
     def get_rates(self, pair: str, refresh: bool, is_short: bool) -> tuple[float, float]:
         entry_rate = None
         exit_rate = None
+        # 与 get_rate 保持同一口径的缓存键（双向模式带方向）
+        cache_key = self._rate_cache_key(pair, is_short)
         if not refresh:
             with self._cache_lock:
-                entry_rate = self._entry_rate_cache.get(pair)
-                exit_rate = self._exit_rate_cache.get(pair)
+                entry_rate = self._entry_rate_cache.get(cache_key)
+                exit_rate = self._exit_rate_cache.get(cache_key)
             if entry_rate:
                 logger.debug(f"Using cached buy rate for {pair}.")
             if exit_rate:

@@ -65,6 +65,20 @@ class ProtectionManager:
                         )
         return result
 
+    def _lock_side(self, lock_side: str, side: LongShort) -> str:
+        """按币种保护锁的方向。
+
+        上游默认锁整个币种（`lock_side="*"`）—— 单向模式下没问题，但双向持仓下
+        一条腿止损会把**另一条腿的入场也一起冻结**，网格类策略直接瘫痪。
+        `hedge_mode` 打开时把 `"*"` 收窄成触发它的那个方向；关闭时原样返回，
+        单向行为逐字节不变。
+        全局锁（最大回撤、StoplossGuard 的 global_stop）不走这里 —— 那是对整个
+        账户/全部币种的风险闸，仍锁全方向。
+        """
+        if self._config.get("hedge_mode", False) and lock_side == "*":
+            return side
+        return lock_side
+
     def stop_per_pair(
         self,
         pair,
@@ -81,9 +95,10 @@ class ProtectionManager:
                     pair=pair, date_now=now, side=side, starting_balance=starting_balance
                 )
                 if lock and lock.until:
-                    if not PairLocks.is_pair_locked(pair, lock.until, lock.lock_side):
+                    lock_side = self._lock_side(lock.lock_side, side)
+                    if not PairLocks.is_pair_locked(pair, lock.until, lock_side):
                         result = PairLocks.lock_pair(
-                            pair, lock.until, lock.reason, now=now, side=lock.lock_side
+                            pair, lock.until, lock.reason, now=now, side=lock_side
                         )
         return result
 

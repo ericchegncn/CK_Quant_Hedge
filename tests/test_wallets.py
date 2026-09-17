@@ -339,7 +339,7 @@ def test_sync_wallet_futures_live(mocker, default_conf):
     assert len(freqtrade.wallets._positions) == 2
 
     assert "USDT" in freqtrade.wallets._wallets
-    assert "ETH/USDT:USDT" in freqtrade.wallets._positions
+    assert ("ETH/USDT:USDT", "short") in freqtrade.wallets._positions
     assert freqtrade.wallets._last_wallet_refresh is not None
     assert freqtrade.wallets.get_owned("ETH/USDT:USDT", "ETH") == 1000
     assert freqtrade.wallets.get_owned("SOL/USDT:USDT", "SOL") == 0
@@ -348,7 +348,7 @@ def test_sync_wallet_futures_live(mocker, default_conf):
     del mock_result[0]
     freqtrade.wallets.update()
     assert len(freqtrade.wallets._positions) == 1
-    assert "ETH/USDT:USDT" not in freqtrade.wallets._positions
+    assert not any(sym == "ETH/USDT:USDT" for sym, _side in freqtrade.wallets._positions)
 
 
 @pytest.mark.parametrize("includes_upnl", [True, False])
@@ -391,9 +391,9 @@ def test_sync_wallet_futures_live_unrealized_pnl(mocker, default_conf_usdt, incl
     wallets = freqtrade.wallets
 
     # Position uPnL is taken from the exchange, never from initialMargin/collateral.
-    assert wallets._positions["ETH/USDT:USDT"].unrealized_pnl == 30.0
-    assert wallets._positions["ADA/USDT:USDT"].unrealized_pnl == -12.5
-    assert wallets._positions["ETH/USDT:USDT"].collateral == 100.0
+    assert wallets.get_position("ETH/USDT:USDT").unrealized_pnl == 30.0
+    assert wallets.get_position("ADA/USDT:USDT").unrealized_pnl == -12.5
+    assert wallets.get_position("ETH/USDT:USDT").collateral == 100.0
 
     # 1017.5 is equity (wallet balance 1000 + 17.5 uPnL) - strip it only where it's there.
     assert wallets.get_total("USDT") == (1000.0 if includes_upnl else 1017.5)
@@ -468,10 +468,10 @@ def test_sync_wallet_futures_dry(mocker, default_conf, fee):
     assert len(freqtrade.wallets._wallets) == 1
     assert len(freqtrade.wallets._positions) == 4
     positions = freqtrade.wallets.get_all_positions()
-    assert positions["ETH/BTC"].side == "short"
-    assert positions["ETC/BTC"].side == "long"
-    assert positions["XRP/BTC"].side == "long"
-    assert positions["LTC/BTC"].side == "short"
+    assert positions[("ETH/BTC", "short")].side == "short"
+    assert positions[("ETC/BTC", "long")].side == "long"
+    assert positions[("XRP/BTC", "long")].side == "long"
+    assert positions[("LTC/BTC", "short")].side == "short"
 
     assert (
         freqtrade.wallets.get_starting_balance()
@@ -662,8 +662,10 @@ def test_dry_run_wallet_initialization(mocker, default_conf_usdt, config, wallet
     else:
         # Futures mode
         assert "NEO" not in freqtrade.wallets._wallets
-        assert freqtrade.wallets._positions["NEO/USDT"].position == 45.04504504
-        assert pytest.approx(freqtrade.wallets._positions["NEO/USDT"].collateral) == 100
+        assert freqtrade.wallets._positions[("NEO/USDT", "long")].position == 45.04504504
+        assert (
+            pytest.approx(freqtrade.wallets._positions[("NEO/USDT", "long")].collateral) == 100
+        )
 
         # Verify USDT wallet's free was reduced by trade amount
         assert (
@@ -685,7 +687,7 @@ def test_record_wallet_state_stores_wallet_history(mocker, default_conf_usdt):
         "BTC": Wallet("BTC", free=2.0, used=1.0, total=3.0),
     }
     freqtrade.wallets._positions = {
-        "ETH/USDT:USDT": PositionWallet(
+        ("ETH/USDT:USDT", "long"): PositionWallet(
             symbol="ETH/USDT:USDT",
             position=0.8,
             collateral=1.0,
@@ -734,7 +736,7 @@ def test_record_wallet_state_stores_wallet_history_error(mocker, default_conf, c
         "ETH": Wallet("ETH", free=2.0, used=1.0, total=3.0),
     }
     freqtrade.wallets._positions = {
-        "ETH/BTC": PositionWallet(
+        ("ETH/BTC", "long"): PositionWallet(
             symbol="ETH/BTC",
             position=0.8,
             collateral=1.0,
@@ -752,3 +754,72 @@ def test_record_wallet_state_stores_wallet_history_error(mocker, default_conf, c
     assert log_has_re(r"Error saving wallet balance records: .*", caplog)
     wallet_entries = WalletHistory.session.query(WalletHistory).all()
     assert len(wallet_entries) == 0
+
+
+def test_sync_wallet_hedge_mode_both_sides(mocker, default_conf_usdt):
+    """双向持仓核心契约：同一币种的多头与空头必须同时保留，不能互相覆盖。
+
+    改造前持仓簿以 symbol 为键，第二笔会覆盖第一笔（回测/实盘都会算错账）。
+    本测试直接钉住"两笔都在、且各自可按方向取到"。
+    """
+    default_conf_usdt["dry_run"] = False
+    default_conf_usdt["trading_mode"] = "futures"
+    default_conf_usdt["margin_mode"] = "isolated"
+
+    def _pos(symbol, side, contracts, collateral, upnl):
+        return {
+            "symbol": symbol,
+            "timestamp": None,
+            "datetime": None,
+            "initialMargin": collateral,
+            "initialMarginPercentage": None,
+            "maintenanceMargin": 0.0,
+            "maintenanceMarginPercentage": 0.005,
+            "entryPrice": 0.0,
+            "notional": 100.0,
+            "leverage": 5.0,
+            "unrealizedPnl": upnl,
+            "contracts": contracts,
+            "contractSize": 1,
+            "marginRatio": None,
+            "liquidationPrice": 0.0,
+            "markPrice": 2896.41,
+            "collateral": collateral,
+            "marginType": "isolated",
+            "side": side,
+            "percentage": None,
+        }
+
+    mocker.patch.multiple(
+        EXMS,
+        get_balances=MagicMock(return_value={"USDT": {"free": 1000.0, "used": 0.0, "total": 1000.0}}),
+        balance_includes_unrealized_pnl=MagicMock(return_value=False),
+        fetch_positions=MagicMock(
+            return_value=[
+                _pos("ETH/USDT:USDT", "long", 10.0, 50.0, 7.5),
+                _pos("ETH/USDT:USDT", "short", 4.0, 20.0, -2.5),
+            ]
+        ),
+    )
+    freqtrade = get_patched_freqtradebot(mocker, default_conf_usdt)
+    positions = freqtrade.wallets.get_all_positions()
+
+    # 两笔必须都在（改造前这里只剩一笔）
+    assert len(positions) == 2
+    assert ("ETH/USDT:USDT", "long") in positions
+    assert ("ETH/USDT:USDT", "short") in positions
+    # 注：mock 交易所里 ETH/USDT:USDT 的合约乘数为 10，
+    #     故 position = contracts × 10（既有测试里 contracts=100 → position=1000 同样如此）
+    assert positions[("ETH/USDT:USDT", "long")].position == 100.0
+    assert positions[("ETH/USDT:USDT", "short")].position == 40.0
+    assert positions[("ETH/USDT:USDT", "long")].unrealized_pnl == 7.5
+    assert positions[("ETH/USDT:USDT", "short")].unrealized_pnl == -2.5
+
+    # 按方向精确取到各自那一笔
+    assert freqtrade.wallets.get_position("ETH/USDT:USDT", "short").position == 40.0
+    assert freqtrade.wallets.get_position("ETH/USDT:USDT", "long").position == 100.0
+    # 不传方向时：优先多头（单向交易的等价退化路径）
+    assert freqtrade.wallets.get_position("ETH/USDT:USDT").side == "long"
+    # get_owned 带方向时返回对应方向的持仓量
+    assert freqtrade.wallets.get_owned("ETH/USDT:USDT", "ETH", "short") == 40.0
+    assert freqtrade.wallets.get_owned("ETH/USDT:USDT", "ETH", "long") == 100.0
