@@ -10,6 +10,19 @@
 
 ---
 
+> ## 🔀 This is the **CK Quant Hedge** branch — dual-side (hedge mode) futures support
+>
+> It lets a strategy hold a **long and a short leg on the same pair at the same time**,
+> which upstream freqtrade explicitly does not support.
+>
+> - Docker image: **`ericchenghz/ck-quant-hedge`**
+> - Install, configuration and every hedge-mode parameter: **[docs/hedge-mode.md](docs/hedge-mode.md)**
+> - This repository contains **framework capability only** — no private strategies, configs or
+>   credentials. Enforced automatically by `.github/workflows/privacy-guard.yml` on every push.
+> - `hedge_mode` defaults to **off**: with it off, the single-side code path is byte-identical to upstream.
+
+---
+
 ## Features
 
 | Feature | Description |
