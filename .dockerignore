@@ -90,3 +90,9 @@ Freqtrade*.txt
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints
+
+# 本机私人物品：会话交接件 / 计划文件（含策略名与回测结论）绝不进镜像。
+# 注意：.gitignore 管的是 git，.dockerignore 管的是构建上下文 —— 两者必须各写一遍。
+.hermes.md
+.hermes/
+*.bak_*
