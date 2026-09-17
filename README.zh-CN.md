@@ -10,6 +10,18 @@
 
 ---
 
+> ## 🔀 本仓库是 **CK Quant Hedge** 分支 —— 支持**双向持仓（Hedge Mode）**
+>
+> 同一个币种可以**同时持有多头与空头两条腿**。这是上游 freqtrade 明确不提供的能力。
+>
+> - Docker 镜像：**`ericchenghz/ck-quant-hedge`**
+> - 安装部署、配置方法与**每一个双向持仓参数的说明**：**[docs/hedge-mode.md](docs/hedge-mode.md)**
+> - 本仓库**只含框架能力** —— 不含任何私人策略、实盘配置与凭据，
+>   由 `.github/workflows/privacy-guard.yml` 在每次推送时自动校验。
+> - `hedge_mode` **默认关闭**：关闭时单向代码路径与上游逐字节一致。
+
+---
+
 ## 特性
 
 | 功能 | 说明 |
