@@ -23,10 +23,10 @@ ENV PYTHONFAULTHANDLER=1
 ENV MALLOC_ARENA_MAX=2
 ENV PATH=/home/ftuser/.local/bin:$PATH
 ENV FT_APP_ENV="docker"
-LABEL org.opencontainers.image.title="CK Quant"
-LABEL org.opencontainers.image.description="Privacy-first Freqtrade distribution with resilient recovery and iceberg execution"
+LABEL org.opencontainers.image.title="CK Quant Hedge"
+LABEL org.opencontainers.image.description="CK Quant Hedge - dual-side (hedge mode) futures support: hold long and short legs on the same pair simultaneously"
 LABEL org.opencontainers.image.licenses="GPL-3.0"
-LABEL org.opencontainers.image.source="https://github.com/ericchegncn/CK_Quant"
+LABEL org.opencontainers.image.source="https://github.com/ericchegncn/CK_Quant_Hedge"
 
 # Prepare environment
 RUN mkdir /freqtrade \

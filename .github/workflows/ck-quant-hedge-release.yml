@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: ck-quant-hedge-release
@@ -19,7 +20,9 @@ env:
 
 jobs:
   release:
-    if: github.repository == 'ericchegncn/CK_Quant_Hedge' && contains(github.event.head_commit.message, '[release-hedge-2026.8.1]')
+    if: |
+      github.repository == 'ericchegncn/CK_Quant_Hedge' &&
+      (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-hedge-2026.8.1]'))
     runs-on: ubuntu-latest
     env:
       # 这两个 Secret 需要在本仓库里单独配置（GitHub 的 Secret 是按仓库隔离的）：
