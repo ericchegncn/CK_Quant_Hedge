@@ -13,15 +13,16 @@
 # ⚠️ 打开 hedge_mode 后，**交易所账户本身**也要切到「双向持仓」，否则带
 #    positionSide 的订单会被拒单（表现为"下单全部失败"）。
 #
+# 策略：默认由下面的 --strategy 指定（必须与配置文件里的 "strategy" 字段一致）。
+# ⚠️ 命令行上的 --strategy 会**覆盖配置里的 "strategy" 字段** ——
+#    以后换策略要么改配置同时删掉这里的 --strategy，要么两处一起改，别只改一处。
 # 可用环境变量覆盖默认值：
 #   CK_HEDGE_IMAGE              镜像（默认 ericchenghz/ck-quant-hedge:latest）
 #   CK_HEDGE_CONTAINER_NAME     容器名
 #   CK_HEDGE_CONFIG             配置文件名（相对 ./user_data）
+#   CK_HEDGE_STRATEGY           策略类名
 #   CK_HEDGE_DATABASE / CK_HEDGE_LOGFILE
 #   CK_HEDGE_WEBUI_BIND / CK_HEDGE_WEBUI_PORT
-#
-# 策略由**配置文件里的 "strategy" 字段**决定，这里不硬编码 ——
-# 需要临时覆盖时再在 command 末尾追加 `--strategy <类名>`。
 # ─────────────────────────────────────────────────────────────────────────────
 services:
   ck-quant-hedge:
@@ -41,4 +42,5 @@ services:
       --userdir /freqtrade/user_data
       --logfile /freqtrade/user_data/logs/${CK_HEDGE_LOGFILE:-hedge.log}
       --db-url sqlite:////freqtrade/user_data/${CK_HEDGE_DATABASE:-tradesv3.sqlite}
-      --config /freqtrade/user_data/${CK_HEDGE_CONFIG:-config.json}
+      --config /freqtrade/user_data/${CK_HEDGE_CONFIG:-config_Hedge_Grid.json}
+      --strategy ${CK_HEDGE_STRATEGY:-CK_Hedge_Grid_15m}
