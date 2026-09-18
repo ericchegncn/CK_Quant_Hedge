@@ -34,6 +34,10 @@ freqtrade backtesting --config docs/examples/hedge-dryrun.example.json \
 - 示例策略：`user_data/strategy/hedge_mode_demo.py`（RSI 双判据，无盈利意图）
 - 示例配置：`docs/examples/hedge-dryrun.example.json`（带中文注释）
 
+> 示例配置里的 `stake_amount` 特意给了 150 —— **BTC 期货的最小名义价值约 100 USDT**，
+> 给少了（例如 20）这个币会被**静默跳过**（日志无报错、只是一笔都不开），
+> 很容易让人误以为策略坏了。需要的 stake ≈ 最小名义 ÷ 杠杆。
+
 ---
 
 ## 1. 为什么上游做不到
@@ -312,6 +316,7 @@ freqtrade trade --config user_data/config_hedge_dryrun.json --strategy <你的�
 | 下单全部失败、报 positionSide | 交易所账户没切 Hedge Mode | 去币安切到双向持仓；或把 `hedge_mode` 设回 `false` |
 | 平仓报 reduceOnly 相关错误 | hedge 开着却发了 reduceOnly | 升级到本分支（已抑制）；确认 `hedge_mode: true` 生效 |
 | 一个币只进得去一条腿 | `max_open_trades` 按币数给了 | 按**腿数**给（币数 × 2） |
+| **某个币一笔都不开**（别的币正常） | 下单量低于该币的**最小名义价值**（BTC 期货约 100 USDT）；freqtrade 会**静默跳过**，日志里没有明显报错 | 提高 `stake_amount`（≈ 最小名义 ÷ 杠杆），或给策略实现 `leverage()` 上杠杆 |
 | 走反的腿长期不回来 | 全仓下的"僵尸腿" | 这是设计取舍，靠策略侧限制单腿最大占用（少档 / 小仓位） |
 
 ---
