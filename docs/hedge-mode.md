@@ -110,6 +110,19 @@ docker compose up -d
    可直接拿 `docs/examples/hedge-dryrun.example.json` 当模板。
 
 > 换配置文件：在 `.env` 里改 `CK_HEDGE_CONFIG=<配置文件名>` 即可（相对 `./user_data`）。
+> 默认值是 `config.json` —— **故意不指向任何具体策略的配置**，别人照抄不会报"文件找不到"。
+
+**策略由配置文件里的 `"strategy"` 字段决定**，compose 里**不写死策略名**：
+写死一个名字，别人没有那个类就会直接报 `Impossible to load Strategy`。
+需要临时覆盖时，在命令行上加 `--strategy <类名>`（命令行优先于配置）。
+
+**回测前还要做一件事**：把历史数据目录挂进来 —— 在 `.env` 里设
+`CK_HEDGE_DATA_DIR=<你已有的数据目录>`。原因是 fork 自带的 `user_data/data/` 是空的，
+不挂就会报 `No history for ... found`。
+
+> ⚠️ `CK_HEDGE_DATA_DIR` **留空会直接报挂载错误**：compose 的 `${VAR:-默认}`
+> 把空值当成"已设置"，于是挂载源变成空串。要么整行删掉（用默认值），
+> 要么写一个真实存在的目录。
 
 ### 4.3 从源码
 
@@ -360,6 +373,12 @@ freqtrade trade --config user_data/config_hedge_dryrun.json --strategy <你的�
 | 一个币只进得去一条腿 | `max_open_trades` 按币数给了 | 按**腿数**给（币数 × 2） |
 | **某个币一笔都不开**（别的币正常） | 下单量低于该币的**最小名义价值**（BTC 期货约 100 USDT）；freqtrade 会**静默跳过**，日志里没有明显报错 | 提高 `stake_amount`（≈ 最小名义 ÷ 杠杆），或给策略实现 `leverage()` 上杠杆 |
 | 走反的腿长期不回来 | 全仓下的"僵尸腿" | 这是设计取舍，靠策略侧限制单腿最大占用（少档 / 小仓位） |
+| `no such service: <名字>` | `docker compose run` 的第一个参数是**服务名**，不是命令名 | 本仓库服务名是 `freqtrade`（`docker compose config --services` 可查） |
+| `Config file ".../xxx.json" not found` | `.env` 里的 `CK_HEDGE_CONFIG` 指向的文件不存在（`.env` 优先于 compose 默认值） | 对上真实文件名；或删掉该行用默认 `config.json` |
+| `Impossible to load Strategy X` | 配置里的 `strategy` 与真实类名不一致，或命令行 `--strategy` 写了别的名字 | 用 `list-strategies` 看真实类名，改配置或改命令行（**别只改一处**） |
+| `No strategy specified` | 配置里没有 `strategy` 字段（compose 不再兜底策略名） | 在配置里加 `"strategy": "<类名>"` |
+| `No history for ... found` | 没把历史数据挂进容器（fork 的 `user_data/data/` 是空的） | 在 `.env` 里设 `CK_HEDGE_DATA_DIR=<你的数据目录>` |
+| 挂载报错 / `invalid mount config` | `.env` 里的 `CK_HEDGE_DATA_DIR` **留空** | 整行删掉（用默认值）或写真实目录 —— 空值会被当作"已设置" |
 
 ---
 

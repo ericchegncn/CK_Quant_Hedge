@@ -33,6 +33,13 @@ docker run -d --name ck-quant-hedge \
   trade --config /freqtrade/user_data/config.json
 ```
 
+或者用 compose（服务名是 `freqtrade`）：
+
+```bash
+cp .env.example .env      # 再把 CK_HEDGE_CONFIG / CK_HEDGE_DATA_DIR 指向你自己的文件
+docker compose up -d
+```
+
 三个开关就能开起来：`trading_mode: "futures"`、`margin_mode: "cross"`（或 `isolated`）、
 `hedge_mode: true`。注意 `max_open_trades` 从此按**腿数**算（一个币可以有条腿）。
 

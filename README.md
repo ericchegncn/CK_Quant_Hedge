@@ -34,6 +34,13 @@ docker run -d --name ck-quant-hedge \
   trade --config /freqtrade/user_data/config.json
 ```
 
+Or with compose (service name is `freqtrade`):
+
+```bash
+cp .env.example .env      # then point CK_HEDGE_CONFIG / CK_HEDGE_DATA_DIR at your files
+docker compose up -d
+```
+
 Three switches turn it on — `trading_mode: "futures"`, `margin_mode: "cross"` (or `isolated`),
 `hedge_mode: true`. `max_open_trades` then counts **legs**, not pairs (one pair can hold two).
 
