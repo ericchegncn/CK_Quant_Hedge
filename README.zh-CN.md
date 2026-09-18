@@ -22,10 +22,33 @@
 
 ---
 
+## 快速开始（双向持仓）
+
+```bash
+docker pull ericchenghz/ck-quant-hedge:latest
+docker run -d --name ck-quant-hedge \
+  -v "$(pwd)/user_data:/freqtrade/user_data" \
+  -p 127.0.0.1:8080:8080 \
+  ericchenghz/ck-quant-hedge:latest \
+  trade --config /freqtrade/user_data/config.json
+```
+
+三个开关就能开起来：`trading_mode: "futures"`、`margin_mode: "cross"`（或 `isolated`）、
+`hedge_mode: true`。注意 `max_open_trades` 从此按**腿数**算（一个币可以有条腿）。
+
+**别靠猜，先看文档**：**[docs/hedge-mode.md](docs/hedge-mode.md)** 覆盖了
+安装（Docker / docker-compose / 源码 / APK）、每一个双向持仓参数的说明、
+逐仓与全仓的取舍、可直接复制的回测命令、用内置示例策略做**五分钟验证**、
+模拟盘四查、实盘上线清单，以及一张排查表和六个必知的坑
+（代码里都已处理，但你应该知道它们存在）。
+
+---
+
 ## 特性
 
 | 功能 | 说明 |
 |---|---|
+| **双向持仓（Hedge Mode）** | 同一个币种**同时**持有多头与空头两条腿 —— 上游 freqtrade 明确不支持。默认关闭，关闭时单向路径与上游逐字节一致。**[完整指南 →](docs/hedge-mode.md)** |
 | **崩溃安全订单恢复** | 应对快速反手交易时的交易所订单恢复，防止无限重启循环 |
 | **合成冰山单** | 可选：把大订单拆成多个隐藏小子单（入场/出场） |
 | **卡片式响应式 UI** | 半透明、移动端友好的 WebUI，支持 7 种语言（简中/繁中/英/德/日/法/韩） |

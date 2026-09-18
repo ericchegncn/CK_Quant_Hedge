@@ -1,0 +1,70 @@
+{
+    // ══════════════════════════════════════════════════════════════════════════
+    // CK Quant Hedge —— 示例配置（回测 / 模拟盘都能用）
+    //
+    // 这份配置配的是示例策略 HedgeModeDemo，用来让人几分钟内跑通并看到
+    // 「同币多空两条腿同时在场」。它不是给实盘用的，也没有调过参数。
+    //
+    // 用法见 docs/hedge-mode.md。要点只有三个开关：
+    //     trading_mode = futures     双向持仓是合约能力
+    //     margin_mode  = cross       全仓不会单腿爆仓（逐仓则相反，见文档 4.3）
+    //     hedge_mode   = true        ★ 本分支的核心能力
+    // ══════════════════════════════════════════════════════════════════════════
+
+    "stake_currency": "USDT",
+    "stake_amount": 20,
+    "tradable_balance_ratio": 0.99,
+    "dry_run": true,
+    "dry_run_wallet": 10000,
+    "max_open_trades": 8,          // 按「腿数」算：4 个币 × 2 条腿
+
+    "trading_mode": "futures",
+    "margin_mode": "cross",
+    "hedge_mode": true,
+
+    "strategy": "HedgeModeDemo",
+    "strategy_path": "user_data/strategy",
+    "timeframe": "15m",
+
+    // 回测必须开：否则回测器仍按「一个币一笔」处理，只有一条腿，
+    // 与实盘（方向门禁允许反向腿共存）不一致。实盘不需要它。
+    "position_stacking": true,
+
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": { "enableRateLimit": true },
+        "ccxt_async_config": { "enableRateLimit": true },
+        "pair_whitelist": [
+            "BTC/USDT:USDT",
+            "ETH/USDT:USDT",
+            "SOL/USDT:USDT",
+            "BNB/USDT:USDT"
+        ],
+        "pair_blacklist": []
+    },
+
+    // 合约必须走盘口定价：币安期货 ticker 没有买卖价，用 ticker 会报
+    // "Ticker pricing not available"。
+    "entry_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": { "enabled": false }
+    },
+    "exit_pricing": {
+        "price_side": "other",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+
+    "pairlists": [
+        { "method": "StaticPairList" }
+    ],
+
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}

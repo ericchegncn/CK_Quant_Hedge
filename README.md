@@ -23,10 +23,33 @@
 
 ---
 
+## Quick start (hedge mode)
+
+```bash
+docker pull ericchenghz/ck-quant-hedge:latest
+docker run -d --name ck-quant-hedge \
+  -v "$(pwd)/user_data:/freqtrade/user_data" \
+  -p 127.0.0.1:8080:8080 \
+  ericchenghz/ck-quant-hedge:latest \
+  trade --config /freqtrade/user_data/config.json
+```
+
+Three switches turn it on — `trading_mode: "futures"`, `margin_mode: "cross"` (or `isolated`),
+`hedge_mode: true`. `max_open_trades` then counts **legs**, not pairs (one pair can hold two).
+
+**Do not** work from guesswork: **[docs/hedge-mode.md](docs/hedge-mode.md)** covers installation
+(Docker / docker-compose / source / APK), every hedge-mode parameter, the isolated-vs-cross
+trade-off, runnable backtest commands, a 5-minute verification with the bundled demo strategy,
+dry-run validation and a live-trading checklist — plus a troubleshooting table and the six
+sharp edges that bite people (they are all handled in code, but you should know they exist).
+
+---
+
 ## Features
 
 | Feature | Description |
 |---|---|
+| **Dual-side positions (hedge mode)** | Hold a long **and** a short leg on the **same pair at the same time** — upstream freqtrade refuses this. Off by default; with it off the single-side path stays byte-identical. **[Guide →](docs/hedge-mode.md)** |
 | **Crash-safe order recovery** | Restores exchange orders after rapid stop-and-reverse trading, preventing infinite restart loops |
 | **Synthetic iceberg orders** | Optional split of large orders into hidden slices for entries and exits |
 | **Card-based responsive UI** | Translucent, mobile-friendly WebUI with 7 locales (zh-CN, zh-TW, en, de, ja, fr, ko) |

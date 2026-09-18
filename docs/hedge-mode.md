@@ -1,7 +1,38 @@
-# 双向持仓（Hedge Mode）
+# 双向持仓（Hedge Mode）完整指南
 
 > 同一币种**同时持有多头与空头两条腿**。这是本分支相对上游 freqtrade 的**唯一能力差异**，
 > 也是它存在的理由 —— 上游明确不支持，且短期内不打算支持。
+>
+> 本文覆盖：**安装 → 配置 → 回测 → 模拟盘 → 实盘**，以及所有已知的坑。
+
+---
+
+## 0. 五分钟验证「双向持仓到底成不成立」
+
+不需要 API key，不需要实盘，只需要历史数据。
+
+```bash
+# 1) 拿到本分支（或用 Docker，见第 4 节）
+git clone https://github.com/ericchegncn/CK_Quant_Hedge.git
+cd CK_Quant_Hedge
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -e .
+
+# 2) 下一点历史数据（4 个币、15m）
+freqtrade download-data --config docs/examples/hedge-dryrun.example.json \
+  --timeframes 15m --days 90
+
+# 3) 跑示例策略（它存在的唯一目的就是演示双向持仓，不是交易策略）
+freqtrade backtesting --config docs/examples/hedge-dryrun.example.json \
+  --strategy HedgeModeDemo --strategy-path user_data/strategy \
+  --timerange 20260601-20260801 --export trades
+```
+
+看到**多空两行**的出场统计就说明能力生效了。要确认"同币两条腿真的同时在场"，
+用第 6.2 节的逐笔检查。
+
+- 示例策略：`user_data/strategy/hedge_mode_demo.py`（RSI 双判据，无盈利意图）
+- 示例配置：`docs/examples/hedge-dryrun.example.json`（带中文注释）
 
 ---
 
@@ -34,70 +65,11 @@
 4. **主循环里凡"按 pair 决策"的地方都要问一句：方向呢？**
    已处理：入场候选剔除、`create_trade` 门禁、行情缓存键、RPC 查询、按币保护锁、跨保证金强平价。
 
-## 4. 怎么开启
+---
 
-### 4.1 最小配置
+## 4. 安装
 
-```json
-{
-    "trading_mode": "futures",
-    "margin_mode": "cross",
-    "hedge_mode": true,
-    "max_open_trades": 20
-}
-```
-
-### 4.2 每个参数为什么必须这么给
-
-| 参数 | 取值 | 说明 |
-|---|---|---|
-| `trading_mode` | `futures` | 双向持仓是**合约**能力。现货没有 `positionSide` 概念，开启无效。 |
-| `margin_mode` | `isolated` / `cross` | **最容易踩错的一个**，见 4.3。 |
-| `hedge_mode` | `true` | 总开关。默认 `false`。 |
-| `max_open_trades` | 按**腿数**算 | 一个币最多有 2 条腿（多 + 空）。20 个币最多 40 条腿 → 想全部在场就得给 40。给少了不会报错，只是排不进去。 |
-| `position_stacking` | 回测时需要 | **仅回测**：回测器没有 hedge 概念，默认一个币只允许一笔在场，不开这个就永远只有一条腿。实盘不需要它（方向门禁已经允许反向腿共存）。 |
-
-### 4.3 逐仓 vs 全仓：这是双向持仓最关键的一次选择
-
-| | 逐仓 `isolated` | 全仓 `cross` |
-|---|---|---|
-| 强平层级 | **单腿**：每条腿只用自己的保证金兜底 | **账户级**：整个钱包兜底 |
-| 强平距离 | 约 `1/杠杆`（价格口径） | 直到账户权益耗尽 |
-| 表现 | 走反的腿会被**强平清场**，损失被单腿保证金封顶 | 走反的腿**不爆也不停**，长期占用保证金与槽位（"僵尸腿"，需要靠策略侧的结构控制） |
-| 风险 | 单腿爆仓（可预期、可封顶） | 账户级回撤（不可封顶，必须靠仓位上限约束） |
-
-**选择原则**：想"损失封顶、可预期"用逐仓；想"单腿不被强平、能等回来"用全仓 —— 但用全仓必须
-自己把每条腿的最大占用框住（`max_open_trades` × 单腿最大保证金必须远小于钱包）。
-
-### 4.4 杠杆
-
-本分支不改变杠杆逻辑：`leverage()` 返回多少就用多少（受交易所上限约束）。
-注意一个**只在合约下成立的换算**：
-
-```
-保证金波动 = 价格距离 × 杠杆
-```
-
-即 2% 的价格波动在 25x 下是 50% 的保证金波动。**凡是以"价格百分比"设定的阈值
-（止损、网格间距、止盈），都要乘一遍杠杆再来判断它是不是合理。**
-
-## 5. 双向持仓的六个坑（都已在代码里处理，但你得知道它们存在）
-
-1. **`reduceOnly` 必须去掉** —— 否则币安在 Hedge Mode 下拒单，表现为"平仓单全部失败"。
-2. **行情缓存键必须带方向** —— 同币多空取价方向不同（默认平多取 `ask`、平空取 `bid`），
-   共用键会让两条腿用同一个错的价格平仓。
-3. **按币种的保护锁会误伤另一条腿** —— 上游 `lock_side="*"` 锁整个币种。双向模式下
-   一条腿止损会把另一条腿的入场一起冻结。本分支把 `"*"` 收敛成触发它的方向；
-   **全局锁不动**（MaxDrawdown / StoplossGuard 这类账户级闸门仍锁全方向）。
-4. **逐仓强平价要计入同币反向腿** —— 反方向腿是另一个独立仓位，它的维持保证金与
-   未实现盈亏会影响本腿的强平价（跨保证金）。本分支已计入。
-5. **RPC `/forceenter` 必须按方向找腿** —— 否则已有空头腿时请求做多，会抓到那条空头腿
-   然后报"position already open"，或在开启仓位调整时**静默把方向改成空头去加仓**。
-6. **槽位按笔计** —— `max_open_trades: N` 表示最多 N 条**腿**，不是 N 个币。
-
-## 6. 安装与部署
-
-### 6.1 Docker（推荐）
+### 4.1 Docker（推荐）
 
 ```bash
 docker pull ericchenghz/ck-quant-hedge:latest
@@ -109,13 +81,18 @@ docker run -d --name ck-quant-hedge \
   trade --config /freqtrade/user_data/config.json
 ```
 
-`docker-compose` 示例见仓库根目录的 `docker-compose.ck-quant.example.yml`：
-把 `image:` 换成上面的镜像名，并确认 `config.json` 里 `hedge_mode: true`。
+镜像里 `freqtrade` 命令已就绪；把配置与策略放进挂载的 `user_data/` 即可。
+**镜像标签**：`latest` / `stable` / `hedge-2026.8.1`（同一个镜像的多个别名）。
 
 **注意**：容器只监听 `127.0.0.1`；要对外提供访问请自行加反向代理与认证，
 不要把 API 端口直接暴露到公网（`api_server` 没有内置的用户体系）。
 
-### 6.2 从源码
+### 4.2 docker-compose
+
+仓库根目录有 `docker-compose.ck-quant.example.yml`：把 `image:` 换成
+`ericchenghz/ck-quant-hedge:latest`，并确认配置里 `hedge_mode: true` 即可。
+
+### 4.3 从源码
 
 ```bash
 git clone https://github.com/ericchegncn/CK_Quant_Hedge.git
@@ -129,19 +106,217 @@ freqtrade create-userdir --userdir user_data
 freqtrade trade --config user_data/config.json
 ```
 
-### 6.3 上实盘前的自检清单
+### 4.4 Android APK
 
-- [ ] `trading_mode: futures`、`hedge_mode: true`（漏了就是单向，不会报错）
+每次 Release 都附带 APK（`CK-Quant-Hedge-Android-*.apk` + SHA-256），见
+[Releases](https://github.com/ericchegncn/CK_Quant_Hedge/releases)。
+它是 WebUI 的手机客户端，连的是**你自己的服务器**，与双向持仓开关无关
+（服务器开了就有两条腿，客户端会显示成两行）。
+
+---
+
+## 5. 配置：怎么开双向持仓
+
+### 5.1 三个必需开关
+
+```json
+{
+    "trading_mode": "futures",
+    "margin_mode": "cross",
+    "hedge_mode": true,
+    "max_open_trades": 20
+}
+```
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `trading_mode` | `futures` | 双向持仓是**合约**能力。现货没有 `positionSide` 概念，开启无效。 |
+| `margin_mode` | `isolated` / `cross` | **最容易踩错的一个**，见 5.4。 |
+| `hedge_mode` | `true` | 总开关。默认 `false`（关闭时与上游逐字节一致）。 |
+| `max_open_trades` | 按**腿数**算 | 一个币最多 2 条腿（多 + 空）。20 个币想全部在场就得给 40。给少了不会报错，只是排不进去。 |
+| `position_stacking` | 回测时需要 | **仅回测**，见 5.3。 |
+
+> 配置文件支持 `//` 注释 —— freqtrade 用 rapidjson 解析且已开 `PM_COMMENTS`，
+> 所以可以直接在配置里写中文说明。完整示例见
+> `docs/examples/hedge-dryrun.example.json`。
+
+### 5.2 `max_open_trades` 按「腿数」算，不是按币数
+
+这是新手最容易困惑的一点：`max_open_trades: 20` 在双向模式下意味着
+"最多 20 条**腿**"，也就是最多 10 个币的多空两条腿同时在手。
+
+### 5.3 `position_stacking`（只在回测里需要）
+
+回测器默认"一个币只允许一笔在场"，不开这个就永远只有一条腿（与实盘不一致）。
+**实盘不需要它** —— 方向门禁本身已经允许反向腿共存。
+
+### 5.4 逐仓 vs 全仓：双向持仓最关键的一次选择
+
+| | 逐仓 `isolated` | 全仓 `cross` |
+|---|---|---|
+| 强平层级 | **单腿**：每条腿只用自己的保证金兜底 | **账户级**：整个钱包兜底 |
+| 强平距离 | 约 `1/杠杆`（价格口径） | 直到账户权益耗尽 |
+| 表现 | 走反的腿会被**强平清场**，损失被单腿保证金封顶 | 走反的腿**不爆也不停**，长期占用保证金与槽位（"僵尸腿"，需要靠策略侧的结构控制） |
+| 风险 | 单腿爆仓（可预期、可封顶） | 账户级回撤（不可封顶，必须靠仓位上限约束） |
+
+**选择原则**：想"损失封顶、可预期"用逐仓；想"单腿不被强平、能等回来"用全仓 ——
+但用全仓必须自己把每条腿的最大占用框住
+（`max_open_trades` × 单腿最大保证金必须远小于钱包）。
+
+### 5.5 杠杆
+
+本分支不改变杠杆逻辑：`leverage()` 返回多少就用多少（受交易所上限约束）。
+注意一个**只在合约下成立的换算**：
+
+```
+保证金波动 = 价格距离 × 杠杆
+```
+
+即 2% 的价格波动在 25x 下是 50% 的保证金波动。**凡是以"价格百分比"设定的阈值
+（止损、网格间距、止盈），都要乘一遍杠杆再来判断它是不是合理。**
+
+---
+
+## 6. 回测
+
+### 6.1 用示例策略跑通（验证能力）
+
+见第 0 节。三个要点：`--strategy-path user_data/strategy`（示例策略不在默认目录）、
+`--export trades`（为了逐笔核对）、`--timerange`。
+
+### 6.2 怎么确认「同币两条腿同时在场」
+
+只看汇总表**不够** —— 它只说明多空都交易过，不能证明**同时**。直接读导出的逐笔最可信：
+
+> 注意：本版本的 `--export-filename` 已废弃（会被忽略），回测结果会以
+> `user_data/backtest_results/backtest-result-<时间戳>.zip` 落盘。下面这段读的就是它。
+
+```python
+import glob, json, os, zipfile
+from collections import defaultdict
+
+newest = sorted(glob.glob("user_data/backtest_results/backtest-result-*.zip"),
+                key=os.path.getmtime)[-1]
+with zipfile.ZipFile(newest) as z:
+    # zip 里最大的那个 .json 就是逐笔结果
+    inner = max((n for n in z.namelist() if n.endswith(".json")),
+                key=lambda n: z.getinfo(n).file_size)
+    data = json.loads(z.read(inner))
+
+strategy = next(iter(data["strategy"]))
+by_pair = defaultdict(list)
+for t in data["strategy"][strategy]["trades"]:
+    by_pair[t["pair"]].append(t)
+
+total = 0
+for pair, trades in sorted(by_pair.items()):
+    longs  = [t for t in trades if not t["is_short"]]
+    shorts = [t for t in trades if t["is_short"]]
+    overlap = sum(
+        1 for a in longs for b in shorts
+        if a["open_date"] < b["close_date"] and b["open_date"] < a["close_date"]
+    )
+    total += overlap
+    print(f"{pair:16s} 多头 {len(longs):3d} 笔 | 空头 {len(shorts):3d} 笔 | 同时在场组合 {overlap}")
+
+print("\n双向持仓成立 ✓" if total else "\n未发现重叠 ✗")
+```
+
+`同时在场组合 > 0` 就是"同币多空腿同时在场的直接证据"。
+（也可以用 `freqtrade backtesting-analysis` 看逐笔。）
+
+> 示例策略的出场阈值是**刻意不对称**的（多头等到 RSI>70、空头等到 RSI<30）。
+> 如果对称，多头会在空头进场前先平掉，两条腿永远不重叠 ——
+> 那样这个示例就演示不出双向持仓，是个容易踩的坑。
+
+### 6.3 自己写策略时的两个硬约束
+
+1. **入场信号必须写在列上**（`enter_long` / `enter_short`）。
+   只实现 `get_entry_signal()` 的策略在**回测**里一笔都不会开 ——
+   那个钩子只有实盘主循环会调用。
+2. **同一根 K 线的 `enter_long` 与 `enter_short` 互斥**（回测器行为）。
+   想要"双向同时在场"，要么让两条腿在不同 K 线开出来，
+   要么在 `confirm_trade_entry` 里做同向去重、反向放行。
+
+### 6.4 数据准备（`--datadir` 的坑）
+
+```bash
+freqtrade download-data --config <config> --timeframes 15m --days 365
+```
+
+- 回测时 `--datadir` **只能从命令行给**：配置里写的 `datadir` 会被
+  `create_datadir()` 直接覆盖。
+- 路径必须指到**带交易所子目录**的那一层，例如 `user_data/data/binance`
+  （少一层就会报 `No history for ... found`）。
+- **币安期货 ticker 没有买卖价** ⇒ 定价必须 `use_order_book: true`，
+  否则报 `Ticker pricing not available`。
+
+---
+
+## 7. 模拟盘（dry-run）验证
+
+`dry_run: true` 时**不会向交易所发任何订单**，但主循环、钱包、方向门禁全部真实运行，
+是上线前最有价值的一步。跑起来后重点看四件事：
+
+1. 同一个币种能**同时**看到多头与空头两条腿（WebUI 里显示成两行）
+2. 平仓不报错 —— 这是 `reduceOnly` 被正确抑制的直接证据
+3. **没有** `positionSide` 相关的拒单
+4. 槽位按腿消耗（`/status` 的条数受 `max_open_trades` 限制）
+
+```bash
+freqtrade trade --config user_data/config_hedge_dryrun.json --strategy <你的策略>
+```
+
+`config_hedge_dryrun.json` 是配套的模拟盘配置样例（40 币、stake 1、全仓、带中文注释）；
+把 `docs/examples/hedge-dryrun.example.json` 复制过去改两处也能用。
+
+---
+
+## 8. 实盘上线清单
+
+- [ ] `trading_mode: futures`、`hedge_mode: true`（漏了就是单向，**不会报错**）
 - [ ] `margin_mode` 是你想要的（逐仓=损失封顶 / 全仓=不会单腿爆但账户风险敞口更大）
 - [ ] `max_open_trades` ≥ 你要同时持有的**腿数**（币数 × 2）
-- [ ] 交易所账户本身已切到 **Hedge Mode**（币安 App/网页端设置）—— 交易所没开、
-      程序开了，`positionSide` 会被拒
+- [ ] **交易所账户本身已切到 Hedge Mode**（币安 App/网页端 → 合约设置）——
+      交易所没开、程序开了，`positionSide` 会被拒
 - [ ] 单腿最大保证金 × 最大腿数 ≪ 钱包余额
-- [ ] 先用 `dry_run: true` 跑通：确认同一币种能同时出现多空两条腿、
-      平仓单不报错（这是 `reduceOnly` 是否被正确抑制的直接证据）
-- [ ] 回测时记得 `position_stacking: true`，否则回测只有一条腿（与实盘不一致）
+- [ ] 先在 `dry_run: true` 下跑够时间，确认第 7 节的四件事
+- [ ] 回测 / 模拟盘 / 实盘三者用**同一份**策略文件（本分支的策略文件可做到单文件自足）
 
-## 7. 测试
+---
+
+## 9. 六个坑（都已在代码里处理，但你得知道它们存在）
+
+1. **`reduceOnly` 必须去掉** —— 否则币安在 Hedge Mode 下拒单，表现为"平仓单全部失败"。
+2. **行情缓存键必须带方向** —— 同币多空取价方向不同（默认平多取 `ask`、平空取 `bid`），
+   共用键会让两条腿用同一个错的价格平仓。
+3. **按币种的保护锁会误伤另一条腿** —— 上游 `lock_side="*"` 锁整个币种。双向模式下
+   一条腿止损会把另一条腿的入场一起冻结。本分支把 `"*"` 收敛成触发它的方向；
+   **全局锁不动**（MaxDrawdown / StoplossGuard 这类账户级闸门仍锁全方向）。
+4. **逐仓强平价要计入同币反向腿** —— 反方向腿是另一个独立仓位，它的维持保证金与
+   未实现盈亏会影响本腿的强平价（跨保证金）。本分支已计入。
+5. **RPC `/forceenter` 必须按方向找腿** —— 否则已有空头腿时请求做多，会抓到那条空头腿
+   然后报"position already open"，或在开启仓位调整时**静默把方向改成空头去加仓**。
+6. **槽位按笔计** —— `max_open_trades: N` 表示最多 N 条**腿**，不是 N 个币。
+
+---
+
+## 10. 常见问题排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 回测里只有一条腿 | `position_stacking` 没开，或策略同 K 线双信号被互斥掉 | 配置开 `position_stacking: true`；两条腿分不同 K 线开 |
+| 回测一笔都不开 | 策略只写了 `get_entry_signal()` | 把信号写到 `enter_long`/`enter_short` **列**上 |
+| `Ticker pricing not available` | 合约用了 ticker 定价 | `entry_pricing` / `exit_pricing` 都设 `use_order_book: true` |
+| `No history for ... found` | `--datadir` 层级不对 | 指到 `user_data/data/<交易所>` 那一层 |
+| 下单全部失败、报 positionSide | 交易所账户没切 Hedge Mode | 去币安切到双向持仓；或把 `hedge_mode` 设回 `false` |
+| 平仓报 reduceOnly 相关错误 | hedge 开着却发了 reduceOnly | 升级到本分支（已抑制）；确认 `hedge_mode: true` 生效 |
+| 一个币只进得去一条腿 | `max_open_trades` 按币数给了 | 按**腿数**给（币数 × 2） |
+| 走反的腿长期不回来 | 全仓下的"僵尸腿" | 这是设计取舍，靠策略侧限制单腿最大占用（少档 / 小仓位） |
+
+---
+
+## 11. 测试
 
 ```bash
 pytest tests/exchange/test_hedge_mode.py tests/freqtradebot/test_hedge_mode.py \
@@ -154,15 +329,13 @@ pytest tests/exchange/test_hedge_mode.py tests/freqtradebot/test_hedge_mode.py \
 按币保护锁的方向收敛、跨保证金强平价计入反向腿，
 以及**跑真实主循环 `process()` 的端到端用例**（同币两条腿同时在场、只平其中一条）。
 
-## 8. 已知限制
+## 12. 已知限制
 
-- **回测器没有 hedge 概念**：入场信号必须写在 `enter_long` / `enter_short` **列**上
-  （只实现 `get_entry_signal` 的策略在回测里一笔都不开），且同一根 K 线两列**互斥**。
-  想要"双向同时在场"，要么按 K 线轮换方向写列，要么在 `confirm_trade_entry` 里做同向去重。
-- **同一币种的多空两条腿不共享保证金计算**（全仓下由交易所账户统一处理，
+- **回测器没有 hedge 概念**：见 6.3 的两个硬约束。
+- **同一币种的多空两条腿不共享本地保证金计算**（全仓下由交易所账户统一处理，
   但本地风控仍按腿算）。
-- **UI 是预编译包**：本仓库不含 WebUI 源码，界面能力与上游一致（API 契约本身是逐笔/逐仓位，
-  两条腿自然显示为两行）。
+- **UI 是预编译包**：本仓库不含 WebUI 源码，界面能力与上游一致
+  （API 契约本身是逐笔/逐仓位，两条腿自然显示为两行）。
 
 ---
 
