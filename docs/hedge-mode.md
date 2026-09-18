@@ -272,6 +272,33 @@ freqtrade download-data --config <config> --timeframes 15m --days 365
 
 ---
 
+### 6.5 在容器里跑回测（而不是本机 venv）
+
+`docker compose run` 的**第一个参数是服务名**（本仓库是 `ck-quant-hedge`），不是命令名 ——
+写成 `run freqtrade ...` 会直接报 `no such service: freqtrade`。
+
+```bash
+docker compose run --rm \
+  -v "<数据目录>:/freqtrade/user_data/data/binance" \
+  ck-quant-hedge backtesting \
+    --userdir /freqtrade/user_data \
+    --config /freqtrade/user_data/config_Hedge_Grid.json \
+    --datadir /freqtrade/user_data/data/binance \
+    --strategy <策略类名> \
+    --timerange 20260101-20260812 --fee 0.001 --breakdown month
+```
+
+三条硬规则：
+
+1. `--config` / `--userdir` / `--datadir` 一律写**容器内路径**（`/freqtrade/...`）。
+   宿主机路径（`D:\...`、`/CK_Quant_Hedge/...`）在容器里**不存在** ——
+   宿主机 `./user_data` 与容器 `/freqtrade/user_data` 是同一个目录的两端。
+2. **fork 的 `user_data/data/` 默认是空的**（历史数据一般在主项目的 `user_data/data/` 里），
+   所以要把数据目录额外挂进去，否则报 `No history for ... found`。
+3. 加 `--rm`，否则每次回测都留下一个已退出的容器。
+
+---
+
 ## 7. 模拟盘（dry-run）验证
 
 `dry_run: true` 时**不会向交易所发任何订单**，但主循环、钱包、方向门禁全部真实运行，
