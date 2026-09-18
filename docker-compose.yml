@@ -1,18 +1,44 @@
----
+# ─────────────────────────────────────────────────────────────────────────────
+# CK Quant Hedge —— Docker Compose 部署
+#
+# 用法：
+#   1) 把配置放到 ./user_data/config.json
+#      三个开关缺一不可：trading_mode="futures"、margin_mode="cross|isolated"、
+#      hedge_mode=true（详见 docs/hedge-mode.md 第 5 节）
+#      配置里还必须有 "strategy" 字段，否则 freqtrade 会报 No strategy specified；
+#      可以直接拿 docs/examples/hedge-dryrun.example.json 当模板。
+#   2) 把策略放到 ./user_data/strategies/
+#   3) docker compose up -d
+#
+# ⚠️ 打开 hedge_mode 后，**交易所账户本身**也要切到「双向持仓」，否则带
+#    positionSide 的订单会被拒单（表现为"下单全部失败"）。
+#
+# 可用环境变量覆盖默认值：
+#   CK_HEDGE_IMAGE              镜像（默认 ericchenghz/ck-quant-hedge:latest）
+#   CK_HEDGE_CONTAINER_NAME     容器名
+#   CK_HEDGE_CONFIG             配置文件名（相对 ./user_data）
+#   CK_HEDGE_DATABASE / CK_HEDGE_LOGFILE
+#   CK_HEDGE_WEBUI_BIND / CK_HEDGE_WEBUI_PORT
+#
+# 策略由**配置文件里的 "strategy" 字段**决定，这里不硬编码 ——
+# 需要临时覆盖时再在 command 末尾追加 `--strategy <类名>`。
+# ─────────────────────────────────────────────────────────────────────────────
 services:
-  CK_Quant:
-    image: ${CK_QUANT_IMAGE:-ericchenghz/ck-quant:latest}
-    container_name: ${CK_QUANT_CONTAINER_NAME:-CK_Quant}
+  ck-quant-hedge:
+    # ★ 必须是 hedge 镜像：主镜像 ericchenghz/ck-quant 没有双向持仓能力，
+    #   而且容器内布局不同（/CK_Quant vs /freqtrade），用错会直接报配置找不到。
+    image: ${CK_HEDGE_IMAGE:-ericchenghz/ck-quant-hedge:latest}
+    container_name: ${CK_HEDGE_CONTAINER_NAME:-CK_Quant_Hedge}
     restart: unless-stopped
-    working_dir: /CK_Quant
+    working_dir: /freqtrade
     volumes:
-      - "./user_data:/CK_Quant/user_data"
+      - "./user_data:/freqtrade/user_data"
     ports:
-      - "${CK_QUANT_WEBUI_BIND:-0.0.0.0}:${CK_QUANT_WEBUI_PORT:-8080}:8080"
+      # 默认只绑本机：api_server 没有内置用户体系，不要直接暴露到公网
+      - "${CK_HEDGE_WEBUI_BIND:-127.0.0.1}:${CK_HEDGE_WEBUI_PORT:-8080}:8080"
     command: >
       trade
-      --userdir /CK_Quant/user_data
-      --logfile /CK_Quant/user_data/logs/${CK_QUANT_LOGFILE:-tradesv3.log}
-      --db-url sqlite:////CK_Quant/user_data/${CK_QUANT_DATABASE:-tradesv3.sqlite}
-      --config /CK_Quant/user_data/${CK_QUANT_CONFIG:-config.json}
-      --strategy ${CK_QUANT_STRATEGY:-SampleStrategy}
+      --userdir /freqtrade/user_data
+      --logfile /freqtrade/user_data/logs/${CK_HEDGE_LOGFILE:-hedge.log}
+      --db-url sqlite:////freqtrade/user_data/${CK_HEDGE_DATABASE:-tradesv3.sqlite}
+      --config /freqtrade/user_data/${CK_HEDGE_CONFIG:-config.json}

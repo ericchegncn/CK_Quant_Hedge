@@ -93,8 +93,23 @@ docker run -d --name ck-quant-hedge \
 
 ### 4.2 docker-compose
 
-仓库根目录有 `docker-compose.ck-quant.example.yml`：把 `image:` 换成
-`ericchenghz/ck-quant-hedge:latest`，并确认配置里 `hedge_mode: true` 即可。
+仓库根目录已经配好，**直接用**（镜像名与容器内路径都已指向本分支）：
+
+```bash
+cp .env.example .env        # 首次；.env 已被 .gitignore 挡住
+docker compose up -d
+```
+
+`.env` 里的变量名是 `CK_HEDGE_*`（主项目的 `CK_QUANT_*` 本仓库**不读**，
+所以从主项目复制来的 `.env` 不会静默把镜像指回 `ck-quant`）。
+默认会挂载 `./user_data` 到容器内的 `/freqtrade/user_data`，并把 WebUI 绑在 `127.0.0.1:8080`。
+
+**两个最容易踩的点**：
+1. 配置里必须有 `"strategy"` 字段，否则报 `No strategy specified`；
+2. 配置里三个开关要齐：`trading_mode="futures"`、`margin_mode`、`hedge_mode=true`。
+   可直接拿 `docs/examples/hedge-dryrun.example.json` 当模板。
+
+> 换配置文件：在 `.env` 里改 `CK_HEDGE_CONFIG=<配置文件名>` 即可（相对 `./user_data`）。
 
 ### 4.3 从源码
 

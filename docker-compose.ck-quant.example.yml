@@ -1,17 +1,31 @@
----
+# ─────────────────────────────────────────────────────────────────────────────
+# CK Quant Hedge —— docker-compose 示例（注释版，可直接复制成 docker-compose.yml）
+#
+# 与仓库根目录的 docker-compose.yml 等价，只是注释更全，适合第一次部署时对照。
+# 完整安装/配置/回测/排查说明见 docs/hedge-mode.md。
+#
+# ⚠️ 两点最容易出错的地方：
+#   1) 配置里必须有 "strategy" 字段（否则报 No strategy specified）
+#   2) 打开 hedge_mode 后，交易所账户本身也要切到「双向持仓」
+# ─────────────────────────────────────────────────────────────────────────────
 services:
-  ck-quant:
-    image: ${CK_QUANT_IMAGE:-ericchenghz/ck-quant:stable}
-    container_name: ${CK_QUANT_CONTAINER_NAME:-CK_Quant}
+  ck-quant-hedge:
+    # 主镜像 ericchenghz/ck-quant 没有双向持仓能力，且容器内布局是 /CK_Quant，
+    # 与这里的 /freqtrade 不兼容 —— 必须用 hedge 镜像。
+    image: ${CK_HEDGE_IMAGE:-ericchenghz/ck-quant-hedge:latest}
+    container_name: ${CK_HEDGE_CONTAINER_NAME:-CK_Quant_Hedge}
     restart: unless-stopped
+    working_dir: /freqtrade
     volumes:
+      # 配置、策略、数据库、日志都在这一个目录里，升级镜像不丢数据
       - "./user_data:/freqtrade/user_data"
     ports:
-      - "${CK_QUANT_WEBUI_BIND:-127.0.0.1}:${CK_QUANT_WEBUI_PORT:-8080}:8080"
+      # 默认只绑 127.0.0.1。api_server 没有内置用户体系，
+      # 要对外提供访问请自己加反向代理与认证。
+      - "${CK_HEDGE_WEBUI_BIND:-127.0.0.1}:${CK_HEDGE_WEBUI_PORT:-8080}:8080"
     command: >
       trade
       --userdir /freqtrade/user_data
-      --logfile /freqtrade/user_data/logs/${CK_QUANT_LOGFILE:-ck-quant.log}
-      --db-url sqlite:////freqtrade/user_data/${CK_QUANT_DATABASE:-tradesv3.sqlite}
-      --config /freqtrade/user_data/${CK_QUANT_CONFIG:-config.json}
-      --strategy ${CK_QUANT_STRATEGY:-SampleStrategy}
+      --logfile /freqtrade/user_data/logs/${CK_HEDGE_LOGFILE:-hedge.log}
+      --db-url sqlite:////freqtrade/user_data/${CK_HEDGE_DATABASE:-tradesv3.sqlite}
+      --config /freqtrade/user_data/${CK_HEDGE_CONFIG:-config.json}
