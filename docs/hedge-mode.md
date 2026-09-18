@@ -274,27 +274,27 @@ freqtrade download-data --config <config> --timeframes 15m --days 365
 
 ### 6.5 在容器里跑回测（而不是本机 venv）
 
-`docker compose run` 的**第一个参数是服务名**（本仓库是 `ck-quant-hedge`），不是命令名 ——
-写成 `run freqtrade ...` 会直接报 `no such service: freqtrade`。
+`docker compose run` 的**第一个参数是服务名**（本仓库的服务名就是 `freqtrade`），
+不是命令名 —— 写成别的名字会报 `no such service`。
 
 ```bash
-docker compose run --rm \
-  -v "<数据目录>:/freqtrade/user_data/data/binance" \
-  ck-quant-hedge backtesting \
-    --userdir /freqtrade/user_data \
-    --config /freqtrade/user_data/config_Hedge_Grid.json \
-    --datadir /freqtrade/user_data/data/binance \
-    --strategy <策略类名> \
-    --timerange 20260101-20260812 --fee 0.001 --breakdown month
+docker compose run --rm freqtrade backtesting \
+  --userdir ./user_data \
+  --config ./user_data/config_Hedge_Grid.json \
+  --strategy <策略类名> \
+  --timerange 20260101-20260812 --timeframe-detail 1m --fee 0.001 --breakdown month
 ```
 
 三条硬规则：
 
-1. `--config` / `--userdir` / `--datadir` 一律写**容器内路径**（`/freqtrade/...`）。
-   宿主机路径（`D:\...`、`/CK_Quant_Hedge/...`）在容器里**不存在** ——
-   宿主机 `./user_data` 与容器 `/freqtrade/user_data` 是同一个目录的两端。
-2. **fork 的 `user_data/data/` 默认是空的**（历史数据一般在主项目的 `user_data/data/` 里），
-   所以要把数据目录额外挂进去，否则报 `No history for ... found`。
+1. `--config` / `--userdir` / `--datadir` 是**容器内路径**。
+   相对路径（`./user_data/...`）也可以用 —— 容器的工作目录是 `/freqtrade`，
+   所以 `./user_data` 就等于 `/freqtrade/user_data`。
+   但**宿主机路径**（`D:\...`、`/CK_Quant_Hedge/...`）在容器里不存在，别写进去。
+2. **历史数据要挂进去**：fork 自带的 `user_data/data/` 一般是空的，
+   回测会报 `No history for ... found`。compose 里已经留好一个数据挂载点，
+   只要在 `.env` 里设一下 `CK_HEDGE_DATA_DIR=<你已有的数据目录>` 即可
+   （默认值 `./user_data/data/binance` 等于没额外挂）。
 3. 加 `--rm`，否则每次回测都留下一个已退出的容器。
 
 ---

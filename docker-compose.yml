@@ -20,12 +20,16 @@
 #   CK_HEDGE_IMAGE              镜像（默认 ericchenghz/ck-quant-hedge:latest）
 #   CK_HEDGE_CONTAINER_NAME     容器名
 #   CK_HEDGE_CONFIG             配置文件名（相对 ./user_data）
+#   CK_HEDGE_DATA_DIR           历史数据目录（挂到容器内 /freqtrade/user_data/data/binance）
 #   CK_HEDGE_STRATEGY           策略类名
 #   CK_HEDGE_DATABASE / CK_HEDGE_LOGFILE
 #   CK_HEDGE_WEBUI_BIND / CK_HEDGE_WEBUI_PORT
 # ─────────────────────────────────────────────────────────────────────────────
 services:
-  ck-quant-hedge:
+  # 服务名就叫 freqtrade —— 这样 `docker compose run freqtrade backtesting ...` 可以直接用。
+  # （docker compose run 的第一个参数是**服务名**，不是命令名；写成别的名字就会报
+  #   no such service。容器名仍然是下面 container_name 指定的那个。）
+  freqtrade:
     # ★ 必须是 hedge 镜像：主镜像 ericchenghz/ck-quant 没有双向持仓能力，
     #   而且容器内布局不同（/CK_Quant vs /freqtrade），用错会直接报配置找不到。
     image: ${CK_HEDGE_IMAGE:-ericchenghz/ck-quant-hedge:latest}
@@ -34,6 +38,10 @@ services:
     working_dir: /freqtrade
     volumes:
       - "./user_data:/freqtrade/user_data"
+      # 历史数据：fork 自带的 user_data/data 一般是空的，回测会报 No history for ... found。
+      # 这里把数据目录也挂进容器，用 .env 里的 CK_HEDGE_DATA_DIR 指向你已有的数据目录
+      # （默认 ./user_data/data/binance，此时等于没额外挂，行为不变）。
+      - "${CK_HEDGE_DATA_DIR:-./user_data/data/binance}:/freqtrade/user_data/data/binance"
     ports:
       # 默认只绑本机：api_server 没有内置用户体系，不要直接暴露到公网
       - "${CK_HEDGE_WEBUI_BIND:-127.0.0.1}:${CK_HEDGE_WEBUI_PORT:-8080}:8080"

@@ -9,7 +9,9 @@
 #   2) 打开 hedge_mode 后，交易所账户本身也要切到「双向持仓」
 # ─────────────────────────────────────────────────────────────────────────────
 services:
-  ck-quant-hedge:
+  # 服务名就叫 freqtrade：`docker compose run freqtrade backtesting ...` 可以直接用
+  # （run 的第一个参数是服务名，不是命令名）
+  freqtrade:
     # 主镜像 ericchenghz/ck-quant 没有双向持仓能力，且容器内布局是 /CK_Quant，
     # 与这里的 /freqtrade 不兼容 —— 必须用 hedge 镜像。
     image: ${CK_HEDGE_IMAGE:-ericchenghz/ck-quant-hedge:latest}
@@ -19,6 +21,9 @@ services:
     volumes:
       # 配置、策略、数据库、日志都在这一个目录里，升级镜像不丢数据
       - "./user_data:/freqtrade/user_data"
+      # 历史数据：fork 自带的 user_data/data 一般是空的，回测会报 No history for ... found。
+      # 在 .env 里设 CK_HEDGE_DATA_DIR=<你已有的数据目录> 即可（默认等于没额外挂）。
+      - "${CK_HEDGE_DATA_DIR:-./user_data/data/binance}:/freqtrade/user_data/data/binance"
     ports:
       # 默认只绑 127.0.0.1。api_server 没有内置用户体系，
       # 要对外提供访问请自己加反向代理与认证。
