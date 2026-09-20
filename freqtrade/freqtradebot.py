@@ -1066,9 +1066,14 @@ class FreqtradeBot(LoggingMixin):
         Check the implemented trading strategy for adjustment command.
         If the strategy triggers the adjustment, a new order gets issued.
         Once that completes, the existing trade is modified to match new data.
+
+        refresh=False：改为读取本轮 _prefetch_exit_rates 批量预取的缓存价（entry/exit
+        两侧均已预热）。此前用 refresh=True，等于每笔持仓各自发一次 fetch_ticker，
+        39 笔持仓时该阶段实测 3.9s（≈ 每笔 100ms = 1 次 API 往返），是主循环第二大开销。
+        缓存未命中时 get_rates 内部会自动回退为单笔实时请求，因此不会取不到价。
         """
         current_entry_rate, current_exit_rate = self.exchange.get_rates(
-            trade.pair, True, trade.is_short
+            trade.pair, False, trade.is_short
         )
 
         current_entry_profit = trade.calc_profit_ratio(current_entry_rate)
@@ -1764,13 +1769,16 @@ class FreqtradeBot(LoggingMixin):
             if not ticker:
                 continue
             try:
-                self.exchange.get_rate(
-                    trade.pair,
-                    side="exit",
-                    is_short=trade.is_short,
-                    refresh=True,
-                    ticker=ticker,
-                )
+                # exit / entry 两侧都预热：加仓路径（check_and_call_adjust_trade_position）
+                # 需要 entry+exit 两个价，原先只预热 exit，导致它绕过缓存重新逐笔请求行情。
+                for _side in ("exit", "entry"):
+                    self.exchange.get_rate(
+                        trade.pair,
+                        side=_side,
+                        is_short=trade.is_short,
+                        refresh=True,
+                        ticker=ticker,
+                    )
             except Exception:
                 # 单笔失败不影响其他交易；缓存未命中时该笔会自行请求行情
                 continue
