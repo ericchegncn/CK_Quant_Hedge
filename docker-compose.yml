@@ -6,20 +6,38 @@
 #      三个开关缺一不可：trading_mode="futures"、margin_mode="cross|isolated"、
 #      hedge_mode=true（详见 docs/hedge-mode.md 第 5 节）
 #      配置里还必须有 "strategy" 字段，否则 freqtrade 会报 No strategy specified；
-#      可以直接拿 docs/examples/hedge-dryrun.example.json 当模板。
-#   2) 把策略放到 ./user_data/strategies/
+#      可以直接拿 docs/examples/hedge-dryrun.example.json 当模板（它的 strategy
+#      字段指向本仓库自带的示例策略 HedgeModeDemo）。
+#   2) 把策略放到 ./user_data/strategies/（或用 --strategy-path 指别的目录）
 #   3) docker compose up -d
 #
 # ⚠️ 打开 hedge_mode 后，**交易所账户本身**也要切到「双向持仓」，否则带
 #    positionSide 的订单会被拒单（表现为"下单全部失败"）。
 #
-# 策略：**由配置文件里的 "strategy" 字段决定**，这里不写死 ——
-# 写死一个名字，别人没有那个策略类就会直接报 Impossible to load Strategy。
-# 需要临时覆盖时，在命令行上加 `--strategy <类名>`（命令行会覆盖配置里的值）。
+# ── 策略与配置怎么指定（★ 2026-09-21 脱敏定稿）──────────────────────────────
+# 本文件会用环境变量取值，**默认值一律指向本仓库自带的公开示例**，所以一份全新的
+# clone 直接 `docker compose up -d` 就能跑起来（不会因为找不到某个私有策略而启动失败）：
+#
+#     --config       ${CK_HEDGE_CONFIG:-config.json}
+#     --strategy     ${CK_HEDGE_STRATEGY:-HedgeModeDemo}
+#     --strategy-path /freqtrade/user_data/${CK_HEDGE_STRATEGY_PATH:-strategy}
+#
+# 自己的部署想固定用某个策略/配置，就写进 `.env`（`.env` 已被 .gitignore 挡住，
+# 不进仓库）。**绝不要把私有的策略类名或配置名写回本文件** —— 本文件是公开的。
+# 示例（本地私有部署的样子）：
+#     CK_HEDGE_CONFIG=my_config.json
+#     CK_HEDGE_STRATEGY=MyStrategy
+#     CK_HEDGE_STRATEGY_PATH=strategies
+#
+# 命令行上的 `--strategy` 优先级最高；本 compose 显式传了它，是为了避免旧 .env /
+# 旧配置文件与当前部署错配（配置里的 "strategy" 字段会被它覆盖）。
+#
 # 可用环境变量覆盖默认值：
 #   CK_HEDGE_IMAGE              镜像（默认 ericchenghz/ck-quant-hedge:latest）
 #   CK_HEDGE_CONTAINER_NAME     容器名
 #   CK_HEDGE_CONFIG             配置文件名（相对 ./user_data，默认 config.json）
+#   CK_HEDGE_STRATEGY           策略类名（默认 HedgeModeDemo）
+#   CK_HEDGE_STRATEGY_PATH      策略目录名（相对 ./user_data，默认 strategy）
 #   CK_HEDGE_DATA_DIR           历史数据目录（挂到容器内 /freqtrade/user_data/data/binance）
 #   CK_HEDGE_DATABASE / CK_HEDGE_LOGFILE
 #   CK_HEDGE_WEBUI_BIND / CK_HEDGE_WEBUI_PORT
@@ -45,7 +63,8 @@ services:
       # （默认 ./user_data/data/binance，此时等于没额外挂，行为不变）。
       - "${CK_HEDGE_DATA_DIR:-./user_data/data/binance}:/freqtrade/user_data/data/binance"
     ports:
-      # 默认只绑本机：api_server 没有内置用户体系，不要直接暴露到公网
+      # 默认只绑本机：api_server 没有内置用户体系，不要直接暴露到公网。
+      # 要局域网访问就在 .env 里显式写 CK_HEDGE_WEBUI_BIND=0.0.0.0。
       - "${CK_HEDGE_WEBUI_BIND:-127.0.0.1}:${CK_HEDGE_WEBUI_PORT:-8080}:8080"
     command: >
       trade
@@ -53,3 +72,5 @@ services:
       --logfile /freqtrade/user_data/logs/${CK_HEDGE_LOGFILE:-hedge.log}
       --db-url sqlite:////freqtrade/user_data/${CK_HEDGE_DATABASE:-tradesv3.sqlite}
       --config /freqtrade/user_data/${CK_HEDGE_CONFIG:-config.json}
+      --strategy ${CK_HEDGE_STRATEGY:-HedgeModeDemo}
+      --strategy-path /freqtrade/user_data/${CK_HEDGE_STRATEGY_PATH:-strategy}
