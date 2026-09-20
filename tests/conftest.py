@@ -348,6 +348,17 @@ def patch_get_signal(
 
     freqtrade.strategy.get_entry_signal = patched_get_entry_signal
 
+    def patched_get_entry_signals(*args, **kwargs):
+        """双向版（hedge_mode）：两列都置 1 时返回两条信号，不再跨方向互斥。"""
+        signals = []
+        if enter_long and not exit_long:
+            signals.append((SignalDirection.LONG, enter_tag))
+        if enter_short and not exit_short:
+            signals.append((SignalDirection.SHORT, enter_tag))
+        return signals
+
+    freqtrade.strategy.get_entry_signals = patched_get_entry_signals
+
     def patched_get_exit_signal(pair, timeframe, dataframe, is_short):
         if is_short:
             return enter_short, exit_short, exit_tag

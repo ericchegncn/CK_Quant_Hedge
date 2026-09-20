@@ -1407,6 +1407,57 @@ class IStrategy(ABC, HyperStrategyMixin):
         )
         return enter_signal, enter_tag
 
+    def get_entry_signals(
+        self,
+        pair: str,
+        timeframe: str,
+        dataframe: DataFrame,
+    ) -> list[tuple[SignalDirection | None, str | None]]:
+        """`get_entry_signal` 的**双向**版本：同一根 K 线上两个方向各自独立判断。
+
+        上游 `get_entry_signal` 隐含"一个币种只能有一笔持仓"，于是把 `enter_long`
+        与 `enter_short` 当作互斥（同一根 K 线上两列都置 1 → **两个方向都不开**），
+        策略只能靠"按 K 线槽位轮换方向"绕过 —— 代价是两条腿永远差一根 K 线建仓，
+        建仓价差就成了那条腿的开仓浮亏。
+
+        这里保留**同一方向内部**的语义（`enter_long` 遇到 `exit_long` 仍不开，
+        与上游逐字一致），只解除**跨方向**的互斥：两列都置 1 时返回两条信号。
+
+        只有 `config["hedge_mode"]` 打开时 `FreqtradeBot.enter_positions` 才会调它；
+        关闭时走原 `get_entry_signal`，单向行为逐字节不变（有回归测试钉住）。
+        """
+        latest, latest_date = self.get_latest_candle(pair, timeframe, dataframe)
+        if latest is None or latest_date is None:
+            return []
+
+        enter_long = latest.get(SignalType.ENTER_LONG, 0) == 1
+        exit_long = latest.get(SignalType.EXIT_LONG, 0) == 1
+        enter_short = latest.get(SignalType.ENTER_SHORT, 0) == 1
+        exit_short = latest.get(SignalType.EXIT_SHORT, 0) == 1
+
+        enter_tag = latest.get(SignalTagType.ENTER_TAG, None)
+        enter_tag = enter_tag if isinstance(enter_tag, str) and enter_tag != "nan" else None
+
+        signals: list[tuple[SignalDirection | None, str | None]] = []
+        if enter_long == 1 and not exit_long:
+            signals.append((SignalDirection.LONG, enter_tag))
+        if (
+            self.config.get("trading_mode", TradingMode.SPOT) != TradingMode.SPOT
+            and self.can_short
+            and enter_short == 1
+            and not exit_short
+        ):
+            signals.append((SignalDirection.SHORT, enter_tag))
+
+        if signals and self.ignore_expired_candle(
+            latest_date=latest_date,
+            current_time=dt_now(),
+            timeframe_seconds=timeframe_to_seconds(timeframe),
+            enter=True,
+        ):
+            return []
+        return signals
+
     def ignore_expired_candle(
         self, latest_date: datetime, current_time: datetime, timeframe_seconds: int, enter: bool
     ):

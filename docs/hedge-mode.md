@@ -266,9 +266,9 @@ print("\n双向持仓成立 ✓" if total else "\n未发现重叠 ✗")
 1. **入场信号必须写在列上**（`enter_long` / `enter_short`）。
    只实现 `get_entry_signal()` 的策略在**回测**里一笔都不会开 ——
    那个钩子只有实盘主循环会调用。
-2. **同一根 K 线的 `enter_long` 与 `enter_short` 互斥**（回测器行为）。
-   想要"双向同时在场"，要么让两条腿在不同 K 线开出来，
-   要么在 `confirm_trade_entry` 里做同向去重、反向放行。
+2. **同一方向内部仍然互斥**：`enter_long` 与 `exit_long` 同时为 1 时不开多头
+   （空头同理）。这条是上游语义，本分支**没有**改。
+   **跨方向**的互斥已在 2026-09-21 解除 —— 见 6.6。
 
 ### 6.4 数据准备（`--datadir` 的坑）
 
@@ -309,6 +309,43 @@ docker compose run --rm freqtrade backtesting \
    只要在 `.env` 里设一下 `CK_HEDGE_DATA_DIR=<你已有的数据目录>` 即可
    （默认值 `./user_data/data/binance` 等于没额外挂）。
 3. 加 `--rm`，否则每次回测都留下一个已退出的容器。
+
+---
+
+### 6.6 同一根 K 线双向开仓（2026-09-21 起支持）
+
+对冲网格类策略需要"多空两条腿在同一根 K 线上、以同一个价格一起建仓"。
+上游 freqtrade 有三处"一个币种只允许一笔持仓"的假设，会把这种信号当成
+"两个方向都不开"，本分支在 `hedge_mode: true` 时逐处解除：
+
+| # | 位置 | 上游行为 | 本分支（仅 hedge_mode 打开时） |
+|---|---|---|---|
+| 1 | 回测 `Backtesting.check_for_trade_entry` | 同一根 K 线上 `enter_long` 与 `enter_short` **互斥**（两列都置 1 → 两个方向都不开） | `check_for_trade_entries()` 逐方向判断，两列都置 1 → `['long','short']` |
+| 2 | 回测 `backtest_loop` | `position_stacking or 该币种无在场持仓` —— 一个币种一笔 | `_entry_slot_available()` **按方向**计名额，两条腿互不占用 |
+| 3 | 实盘 `IStrategy.get_entry_signal` | 同一条互斥规则，每个币种每次循环只出一个方向 | `get_entry_signals()` 返回两个方向各自的信号，`enter_positions` 在一个循环里逐个建仓 |
+
+**策略侧怎么写**：把 `enter_long` 与 `enter_short` 在同一根 K 线上都置 1 即可
+（两列都由 `populate_entry_trend` 输出，回测与实盘同源）：
+
+```python
+def populate_entry_trend(self, dataframe, metadata):
+    tradable = dataframe["volume"] > 0
+    dataframe.loc[tradable, ["enter_long", "enter_tag"]] = (1, "long-leg")
+    dataframe.loc[tradable, ["enter_short", "enter_tag"]] = (1, "short-leg")
+    return dataframe
+```
+
+注意：
+
+- **回测**：两条腿拿到的是**同一个 `open_rate`**（同一根 K 线的开盘价）。
+- **实盘**：两条腿在**同一次主循环**里下单，各自取一次盘口快照 ——
+  价格差就是一个买卖价差（合约 ticker 没有买卖价时按盘口取，见 6.4）。
+- 策略侧仍应保留"同向只留一条腿"的门禁（`confirm_trade_entry`）：框架只保证
+  "同一根 K 线两个方向都能开"，不负责替你限制同方向叠加。
+- `hedge_mode` 关闭时走的仍是上游原路径（单方向 + 跨方向互斥），
+  行为逐字节不变 —— 有回归测试钉住（`tests/optimize/test_hedge_mode.py`）。
+- 回测未开 `position_stacking` 时会打一条 WARNING 并自动按 stacking 处理
+  （双向模式下不需要"反向信号反转仓位"那套机制）。
 
 ---
 
@@ -364,7 +401,8 @@ freqtrade trade --config user_data/config_hedge_dryrun.json --strategy <你的�
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 回测里只有一条腿 | `position_stacking` 没开，或策略同 K 线双信号被互斥掉 | 配置开 `position_stacking: true`；两条腿分不同 K 线开 |
+| 回测里只有一条腿 | `position_stacking` 没开（双向回测需要），或只给了单方向信号 | 配置开 `position_stacking: true`；同 K 线双向信号必须 `hedge_mode: true` 才会两条腿一起开（见 6.6） |
+| 同一根 K 线上两条腿只开出一条 | `hedge_mode` 没打开（跨方向互斥仍在生效） | 配置加 `"hedge_mode": true` |
 | 回测一笔都不开 | 策略只写了 `get_entry_signal()` | 把信号写到 `enter_long`/`enter_short` **列**上 |
 | `Ticker pricing not available` | 合约用了 ticker 定价 | `entry_pricing` / `exit_pricing` 都设 `use_order_book: true` |
 | `No history for ... found` | `--datadir` 层级不对 | 指到 `user_data/data/<交易所>` 那一层 |
@@ -387,17 +425,20 @@ freqtrade trade --config user_data/config_hedge_dryrun.json --strategy <你的�
 ```bash
 pytest tests/exchange/test_hedge_mode.py tests/freqtradebot/test_hedge_mode.py \
        tests/rpc/test_hedge_mode.py tests/plugins/test_hedge_mode.py \
+       tests/optimize/test_hedge_mode.py tests/strategy/test_interface.py \
        tests/test_wallets.py -q
 ```
 
 契约测试覆盖：`positionSide` 的注入与关闭时的缺省、`reduceOnly` 的抑制、
 按方向的入场门禁与 whitelist 剔除、`/forceenter` 的方向过滤、
-按币保护锁的方向收敛、跨保证金强平价计入反向腿，
+按币保护锁的方向收敛、跨保证金强平价计入反向腿、
+**同一根 K 线双向开仓**（回测同 `open_rate`、实盘同一次循环建仓、关闭时行为不变），
 以及**跑真实主循环 `process()` 的端到端用例**（同币两条腿同时在场、只平其中一条）。
 
 ## 12. 已知限制
 
-- **回测器没有 hedge 概念**：见 6.3 的两个硬约束。
+- **同一根 K 线上的方向**：跨方向互斥已解除（6.6），同一方向内部仍互斥（6.3 第 2 条）。
+- **回测器的其他单向假设**：未开 `position_stacking` 时仍会打 WARNING 并自动按 stacking 处理。
 - **同一币种的多空两条腿不共享本地保证金计算**（全仓下由交易所账户统一处理，
   但本地风控仍按腿算）。
 - **UI 是预编译包**：本仓库不含 WebUI 源码，界面能力与上游一致

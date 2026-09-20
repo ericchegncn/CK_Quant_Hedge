@@ -14,6 +14,7 @@
 """
 from unittest.mock import MagicMock
 
+from freqtrade.enums import SignalDirection
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Trade
 from tests.conftest import EXMS, get_patched_freqtradebot, patch_exchange, patch_get_signal
@@ -191,3 +192,52 @@ def test_hedge_mode_end_to_end_two_legs(default_conf_usdt, ticker_usdt, fee, moc
     assert short_leg.is_open is False
     assert short_leg.orders[-1].side == "buy"
     assert _legs() == []
+
+
+def test_hedge_on_both_legs_same_candle(default_conf_usdt, ticker_usdt, fee, mocker):
+    """同一根 K 线上两条腿必须能**一起**开出来（同一次循环 = 同一个 ticker 快照）。
+
+    上游 `get_entry_signal` 把同一根 K 线上两列都置 1 当作"两个方向都不开"，
+    策略只能按 K 线槽位轮换方向 → 第二条腿最早也要等下一根 K 线，
+    两条腿的建仓价差就是后开那条腿的开仓浮亏。fork 的 `get_entry_signals`
+    解除的正是这条跨方向互斥。
+    """
+    freqtrade = _prep(
+        mocker,
+        default_conf_usdt,
+        ticker_usdt,
+        fee,
+        hedge=True,
+        whitelist=["ETH/USDT"],
+        max_open_trades=4,
+    )
+    # 同一根 K 线上两个方向同时给信号
+    patch_get_signal(freqtrade, enter_long=True, enter_short=True)
+    assert freqtrade._entry_signals("ETH/USDT") == [
+        (SignalDirection.LONG, None),
+        (SignalDirection.SHORT, None),
+    ]
+
+    # 一次 enter_positions 调用里两条腿都建出来
+    assert freqtrade.enter_positions(2) == 2
+    trades = Trade.get_trades_proxy(pair="ETH/USDT", is_open=True)
+    assert len(trades) == 2
+    assert {t.trade_direction for t in trades} == {"long", "short"}
+    # 同一个循环里建仓 ⇒ 同一时刻（实盘即同一个 ticker 快照/同一个价格）
+    stamps = sorted(t.open_date_utc for t in trades)
+    assert (stamps[-1] - stamps[0]).total_seconds() <= 2
+
+
+def test_hedge_off_entry_signal_path_unchanged(default_conf_usdt, ticker_usdt, fee, mocker):
+    """hedge_mode 关闭：`_entry_signals` 只回 [None]，仍走原 `get_entry_signal` 路径。
+
+    单参数 `create_trade(pair)` 也保持一致（上游测试直接这样调）。
+    """
+    freqtrade = _prep(
+        mocker, default_conf_usdt, ticker_usdt, fee, hedge=False, whitelist=["ETH/USDT"]
+    )
+    assert freqtrade._entry_signals("ETH/USDT") == [None]
+
+    patch_get_signal(freqtrade, enter_long=True)
+    assert freqtrade.create_trade("ETH/USDT") is True
+    assert len(Trade.get_open_trades()) == 1

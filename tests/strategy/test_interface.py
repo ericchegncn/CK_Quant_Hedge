@@ -116,6 +116,62 @@ def test_returns_latest_signal(ohlcv_history):
     _STRATEGY.config["trading_mode"] = "spot"
 
 
+def test_get_entry_signals_both_directions(ohlcv_history):
+    """双向版 get_entry_signal：同一根 K 线上两列都置 1 → 返回两条信号。
+
+    上游的 `get_entry_signal` 在这里返回 (None, None)（两列都置 1 → 两个方向都不开），
+    这正是"第二条腿只能等下一根 K 线"、两条腿建仓价差（= 那条腿的开仓浮亏）的根因。
+    同一方向内部的互斥保持不变：enter_long 遇到 exit_long 仍然不开。
+    """
+    strategy = StrategyTestV3(config={"trading_mode": "futures"})
+    strategy.dp = DataProvider({}, None, None)
+    strategy.can_short = True
+
+    ohlcv_history.loc[1, "date"] = dt_now_no_micro()
+    mocked_history = ohlcv_history.copy()
+    mocked_history["enter_long"] = 0
+    mocked_history["exit_long"] = 0
+    mocked_history["enter_short"] = 0
+    mocked_history["exit_short"] = 0
+
+    # 无信号
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == []
+
+    # 同根 K 线双向 → 两条信号（上游这里是 (None, None)）
+    mocked_history.loc[1, "enter_long"] = 1
+    mocked_history.loc[1, "enter_short"] = 1
+    assert strategy.get_entry_signal("ETH/BTC", "5m", mocked_history) == (None, None)
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == [
+        (SignalDirection.LONG, None),
+        (SignalDirection.SHORT, None),
+    ]
+
+    # 同一方向内部仍然互斥：enter_long + exit_long → 多头不开，空头照开
+    mocked_history.loc[1, "exit_long"] = 1
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == [
+        (SignalDirection.SHORT, None),
+    ]
+    mocked_history.loc[1, "exit_long"] = 0
+
+    # 现货模式下没有空头信号（与上游判断口径一致）
+    strategy.config["trading_mode"] = "spot"
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == [
+        (SignalDirection.LONG, None),
+    ]
+    strategy.config["trading_mode"] = "futures"
+
+    # 只多头 / 只空头
+    mocked_history.loc[1, "enter_short"] = 0
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == [
+        (SignalDirection.LONG, None),
+    ]
+    mocked_history.loc[1, "enter_long"] = 0
+    mocked_history.loc[1, "enter_short"] = 1
+    assert strategy.get_entry_signals("ETH/BTC", "5m", mocked_history) == [
+        (SignalDirection.SHORT, None),
+    ]
+
+
 def test_analyze_pair_empty(mocker, caplog, ohlcv_history):
     mocker.patch.object(_STRATEGY.dp, "ohlcv", return_value=ohlcv_history)
     mocker.patch.object(_STRATEGY, "_analyze_ticker_internal", return_value=DataFrame([]))

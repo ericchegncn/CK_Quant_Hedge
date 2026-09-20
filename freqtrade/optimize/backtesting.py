@@ -242,6 +242,16 @@ class Backtesting:
         # strategies which define "can_short=True" will fail to load in Spot mode.
         self._can_short = self.trading_mode != TradingMode.SPOT
         self._position_stacking: bool = self.config.get("position_stacking", False)
+        # 双向持仓（fork）：一个币种可以同时持多空两条腿。
+        self._hedge_mode: bool = self.config.get("hedge_mode", False)
+        if self._hedge_mode and not self._position_stacking:
+            # "一个币种只允许一笔在场"在双向模式下由「按方向」取代；反转仓位那套机制
+            # （exiting_dir）在双向模式下没有意义，直接按 stacking 处理。
+            logger.warning(
+                "hedge_mode is enabled without position_stacking - assuming trade stacking "
+                "for per-direction position handling."
+            )
+            self._position_stacking = True
         self.enable_protections: bool = self.config.get("enable_protections", False)
         migrate_data(config, self.exchange)
 
@@ -520,6 +530,8 @@ class Backtesting:
         self._wallet_max_drawdown_pct = 0.0
         self._wallet_current_drawdown_abs = 0.0
         self._wallet_current_drawdown_pct = 0.0
+        # 双向模式：每个币种本根主 K 线的建仓方向列表（backtest_loop 按方向逐个建仓）
+        self._hedge_entry_dirs: dict[str, list[LongShort]] = {}
         self.dataprovider.clear_cache()
         if enable_protections:
             self._load_protections(self.strategy)
@@ -1340,6 +1352,27 @@ class Backtesting:
             return "short"
         return None
 
+    def check_for_trade_entries(self, row) -> list[LongShort]:
+        """`check_for_trade_entry` 的**双向**版本：两个方向各自判断，互不排斥。
+
+        上游在同一根 K 线上把 `enter_long` 与 `enter_short` 当互斥（两列都置 1 →
+        **两个方向都不开**）—— 这是"一个币种一笔持仓"的假设。双向持仓下同一根
+        K 线上两条腿必须能同时开，且两条腿拿到的是**同一个开盘价**。
+
+        同一方向内部的互斥保持一致：`enter_long` 遇到 `exit_long` 仍不开。
+        """
+        enter_long = row[LONG_IDX] == 1
+        exit_long = row[ELONG_IDX] == 1
+        enter_short = self._can_short and row[SHORT_IDX] == 1
+        exit_short = self._can_short and row[ESHORT_IDX] == 1
+
+        dirs: list[LongShort] = []
+        if enter_long and not exit_long:
+            dirs.append("long")
+        if enter_short and not exit_short:
+            dirs.append("short")
+        return dirs
+
     def run_protections(self, pair: str, current_time: datetime, side: LongShort):
         if self.enable_protections:
             self.protections.stop_per_pair(pair, current_time, side, self.starting_balance)
@@ -1535,6 +1568,44 @@ class Backtesting:
                 self.rejected_dict[pair] = []
             self.rejected_dict[pair].append([row[DATE_IDX], row[ENTER_TAG_IDX]])
 
+    def _entry_slot_available(self, pair: str, direction: LongShort) -> bool:
+        """该 (币种, 方向) 现在能否再建一笔。
+
+        - 单向（`hedge_mode` 关闭）：上游规则 —— 一个币种只允许一笔在场。
+        - 双向：**按方向**计数，多头腿与空头腿互不占用名额。
+        """
+        open_trades = LocalTrade.bt_trades_open_pp[pair]
+        if not self._hedge_mode:
+            return self._position_stacking or len(open_trades) == 0
+        return not any(t.trade_direction == direction for t in open_trades)
+
+    def _process_entries(
+        self,
+        pair: str,
+        row: tuple,
+        can_enter: bool,
+        trade_dir: LongShort | None,
+        hedge_dirs: list[LongShort] | None,
+    ) -> None:
+        """按方向逐个尝试建仓。
+
+        `hedge_dirs is None` = 单向模式，候选方向只有 `trade_dir` 一个（上游行为）。
+        """
+        if hedge_dirs is None:
+            directions: list[LongShort] = [trade_dir] if trade_dir is not None else []
+        else:
+            directions = list(hedge_dirs)
+        for direction in directions:
+            if not can_enter or not self._entry_slot_available(pair, direction):
+                continue
+            if PairLocks.is_pair_locked(pair, row[DATE_IDX], direction):
+                continue
+            if self.trade_slot_available(LocalTrade.bt_open_open_trade_count):
+                if trade := self._enter_trade(pair, row, direction):
+                    self.wallets.update()
+            else:
+                self._collate_rejected(pair, row)
+
     def backtest_loop(
         self,
         row: tuple,
@@ -1542,11 +1613,15 @@ class Backtesting:
         current_time: datetime,
         trade_dir: LongShort | None,
         can_enter: bool,
+        hedge_dirs: list[LongShort] | None = None,
     ) -> LongShort | None:
         """
         NOTE: This method is used by Hyperopt at each iteration. Please keep it optimized.
 
         Backtesting processing for one candle/pair.
+
+        :param hedge_dirs: 双向模式（`hedge_mode`）下本根 K 线要尝试的**所有**方向；
+            `None` = 单向模式，只尝试 `trade_dir`（上游行为逐字节不变）。
         """
         exiting_dir: LongShort | None = None
         if not self._position_stacking and len(LocalTrade.bt_trades_open_pp[pair]) > 0:
@@ -1565,18 +1640,7 @@ class Backtesting:
         # max_open_trades must be respected
         # don't open on the last row
         # We only open trades on the main candle, not on detail candles
-        if (
-            can_enter
-            and trade_dir is not None
-            and (self._position_stacking or len(LocalTrade.bt_trades_open_pp[pair]) == 0)
-            and not PairLocks.is_pair_locked(pair, row[DATE_IDX], trade_dir)
-        ):
-            if self.trade_slot_available(LocalTrade.bt_open_open_trade_count):
-                trade = self._enter_trade(pair, row, trade_dir)
-                if trade:
-                    self.wallets.update()
-            else:
-                self._collate_rejected(pair, row)
+        self._process_entries(pair, row, can_enter, trade_dir, hedge_dirs)
 
         for trade in list(LocalTrade.bt_trades_open_pp[pair]):
             # 3. Process entry orders.
@@ -1655,6 +1719,18 @@ class Backtesting:
             for pair in new_pairlist:
                 yield current_time_det, is_first, has_detail, idx, pair
 
+    def _resolve_entry_dir(self, pair: str, row: tuple) -> LongShort | None:
+        """本根主 K 线要建仓的方向（双向模式下额外把完整方向列表存起来）。
+
+        单向（`hedge_mode` 关闭）：上游行为，单方向 + 跨方向互斥。
+        双向：两个方向各自判断，完整列表放进 `_hedge_entry_dirs` 供 backtest_loop 逐个建仓。
+        """
+        if not self._hedge_mode:
+            return self.check_for_trade_entry(row)
+        hedge_dirs = self.check_for_trade_entries(row)
+        self._hedge_entry_dirs[pair] = hedge_dirs
+        return hedge_dirs[0] if hedge_dirs else None
+
     def time_pair_generator(
         self,
         start_date: datetime,
@@ -1713,7 +1789,7 @@ class Backtesting:
                     self.dataprovider._set_dataframe_max_index(
                         pair, self.required_startup + row_index
                     )
-                    trade_dir = self.check_for_trade_entry(row)
+                    trade_dir = self._resolve_entry_dir(pair, row)
                     pair_tradedir_cache[pair] = trade_dir
                     self._capture_wallet(current_time, pair.split("/")[0], row[OPEN_IDX])
 
@@ -1872,7 +1948,18 @@ class Backtesting:
             is_last_row,
             trade_dir,
         ) in self.time_pair_generator(start_date, end_date, list(data.keys()), data):
-            if not self._can_short or trade_dir is None:
+            if self._hedge_mode:
+                # 双向持仓：多空两条腿各自独立建仓（同根 K 线可同时开），
+                # "反向信号反转仓位"的机制在这里没有意义，不参与。
+                self.backtest_loop(
+                    row,
+                    pair,
+                    current_time,
+                    trade_dir,
+                    not is_last_row,
+                    hedge_dirs=self._hedge_entry_dirs.get(pair),
+                )
+            elif not self._can_short or trade_dir is None:
                 # No need to reverse position if shorting is disabled or there's no new signal
                 self.backtest_loop(row, pair, current_time, trade_dir, not is_last_row)
             else:

@@ -955,26 +955,51 @@ class FreqtradeBot(LoggingMixin):
         for pair in whitelist:
             if free_trade_slots <= 0:
                 break
-            try:
-                with self._exit_lock:
-                    if self.create_trade(pair):
-                        free_trade_slots -= 1
-                        trades_created += 1
-            except DependencyException as exception:
-                logger.warning("Unable to create trade for %s: %s", pair, exception)
+            for entry_signal in self._entry_signals(pair):
+                if free_trade_slots <= 0:
+                    break
+                try:
+                    with self._exit_lock:
+                        if self.create_trade(pair, entry_signal):
+                            free_trade_slots -= 1
+                            trades_created += 1
+                except DependencyException as exception:
+                    logger.warning("Unable to create trade for %s: %s", pair, exception)
 
         if not trades_created:
             logger.debug("Found no enter signals for whitelisted currencies. Trying again...")
 
         return trades_created
 
-    def create_trade(self, pair: str) -> bool:
+    def _entry_signals(self, pair: str) -> list[tuple[SignalDirection | None, str | None] | None]:
+        """本次循环里该币种要尝试的开仓信号。
+
+        - **单向模式**（`hedge_mode` 关闭）：返回 `[None]`，表示"交给 create_trade 自己
+          按原路径取信号"，因此单向行为与上游逐字节一致（`None` 只是哨兵，不是信号）。
+        - **双向模式**：一次返回**两个方向各自**的信号（可能只有一条、也可能两条）。
+          两腿在同一个 ticker 上建仓、拿到同一个价格，不再差一根 K 线。
+
+        上游把 `enter_long`/`enter_short` 当互斥（同一根 K 线上两列都置 1 → 两个方向都不开），
+        双向持仓下这恰恰是"第二条腿只能等下一根 K 线"的根因 —— 那条腿的建仓浮亏就是
+        建仓价差。真正被修掉的就是这里。
+        """
+        if not self._hedge_mode_enabled():
+            return [None]
+        analyzed_df, _ = self.dataprovider.get_analyzed_dataframe(pair, self.strategy.timeframe)
+        return list(self.strategy.get_entry_signals(pair, self.strategy.timeframe, analyzed_df))
+
+    def create_trade(
+        self, pair: str, entry_signal: tuple[SignalDirection | None, str | None] | None = None
+    ) -> bool:
         """
         Check the implemented trading strategy for entry signals.
 
         If the pair triggers the enter signal a new trade record gets created
         and the entry-order opening the trade gets issued towards the exchange.
 
+        :param entry_signal: 已经解析好的 (方向, enter_tag)。双向模式下由 `_entry_signals`
+            按方向逐个给出（同一根 K 线上可以有两条）；`None` = 沿用原行为，本函数内部
+            自己调 `strategy.get_entry_signal()`。
         :return: True if a trade has been created.
         """
         logger.debug(f"create_trade for pair {pair}")
@@ -988,10 +1013,14 @@ class FreqtradeBot(LoggingMixin):
         analyzed_df, _ = self.dataprovider.get_analyzed_dataframe(pair, self.strategy.timeframe)
         nowtime = analyzed_df.iloc[-1]["date"] if len(analyzed_df) > 0 else None
 
-        # running get_signal on historical data fetched
-        (signal, enter_tag) = self.strategy.get_entry_signal(
-            pair, self.strategy.timeframe, analyzed_df
-        )
+        if entry_signal is None:
+            # running get_signal on historical data fetched
+            (signal, enter_tag) = self.strategy.get_entry_signal(
+                pair, self.strategy.timeframe, analyzed_df
+            )
+        else:
+            # 双向模式：方向与 tag 已由 _entry_signals/get_entry_signals 解析好
+            (signal, enter_tag) = entry_signal
 
         if signal:
             if self.strategy.is_pair_locked(pair, candle_date=nowtime, side=signal):
