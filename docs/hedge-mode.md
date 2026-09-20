@@ -293,8 +293,9 @@ freqtrade download-data --config <config> --timeframes 15m --days 365
 ```bash
 docker compose run --rm freqtrade backtesting \
   --userdir ./user_data \
-  --config ./user_data/config_Hedge_Grid.json \
-  --strategy <策略类名> \
+  --config ./user_data/<你的配置文件>.json \
+  --strategy <你的策略类名> \
+  --strategy-path ./user_data/<你的策略目录> \
   --timerange 20260101-20260812 --timeframe-detail 1m --fee 0.001 --breakdown month
 ```
 
