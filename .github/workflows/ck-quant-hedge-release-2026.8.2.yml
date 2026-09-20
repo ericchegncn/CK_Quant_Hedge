@@ -1,0 +1,126 @@
+name: Release CK Quant Hedge 2026.8.2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ck-quant-hedge-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  IMAGE_NAME: ericchenghz/ck-quant-hedge
+  RELEASE_TAG: hedge-2026.8.2
+  APK_NAME: CK-Quant-Hedge-Android-0.1.15-debug.apk
+
+jobs:
+  release:
+    if: |
+      github.repository == 'ericchegncn/CK_Quant_Hedge' &&
+      (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-hedge-2026.8.2]'))
+    runs-on: ubuntu-latest
+    env:
+      # 这两个 Secret 需要在本仓库里单独配置（GitHub 的 Secret 是按仓库隔离的）：
+      #   gh secret set DOCKERHUB_USERNAME --repo ericchegncn/CK_Quant_Hedge
+      #   gh secret set DOCKERHUB_TOKEN    --repo ericchegncn/CK_Quant_Hedge
+      # 没配置时，Docker 那两步会自动跳过，APK 与 GitHub Release 照常产出。
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Build and sync Android app
+        working-directory: ck_quant_ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm android:sync
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      # 与 CK Quant 主仓库共用同一个 debug 签名密钥 —— 这样本 APK 可以**直接覆盖安装**
+      # 在主仓库的 APK 之上（applicationId 相同、签名相同），不需要先卸载。
+      - name: Restore CK Quant debug signing key
+        env:
+          DEBUG_KEYSTORE_B64: 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
+        run: |
+          mkdir -p "$HOME/.android"
+          printf '%s' "$DEBUG_KEYSTORE_B64" | base64 --decode > "$HOME/.android/debug.keystore"
+
+      - name: Build APK
+        working-directory: ck_quant_ui/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare APK and checksum
+        run: |
+          cp ck_quant_ui/android/app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
+          sha256sum "$APK_NAME" | tee "$APK_NAME.sha256"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          checksum="$(cat "$APK_NAME.sha256")"
+          cp "docs/releases/$RELEASE_TAG.md" release-notes.md
+          printf '\n\n## APK SHA-256\n\n`%s`\n' "$checksum" >> release-notes.md
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --title "CK Quant Hedge $RELEASE_TAG" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" "$APK_NAME" "$APK_NAME.sha256" \
+              --title "CK Quant Hedge $RELEASE_TAG" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Set up Docker Buildx
+        if: ${{ env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        if: ${{ env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}
+            ${{ env.IMAGE_NAME }}:stable
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

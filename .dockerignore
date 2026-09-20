@@ -96,3 +96,10 @@ Freqtrade*.txt
 .hermes.md
 .hermes/
 *.bak_*
+
+# 2026-09-20：构建守卫（Dockerfile 第三道反泄露检查）会抓"私有部署标记"——
+# 回测日志/内部文档里写着 CK_*_15m 这类策略名，绝不能被烤进公开镜像。
+# 注意：.gitignore 只管 git，构建上下文要看这里（这个坑踩过两次）。
+reports/
+docs/HEDGE_MODE_PLAN.md
+docs/strategy-dev-hedge-grid.md

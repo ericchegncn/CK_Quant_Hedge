@@ -293,14 +293,14 @@ class Binance(Exchange):
             return {}
         except ccxt.DDoSProtection as e:
             # 403 / rate-limit: 静默降级，避免重试卡死主循环
-            self.logger.warning(
+            logger.warning(
                 f"fetch_funding_rates throttled by exchange (DDoSProtection): {e}. "
                 "Degrading to empty funding rates."
             )
             return {}
         except (ccxt.OperationFailed, ccxt.ExchangeError) as e:
             # 403 Forbidden (Binance blocks bulk funding history): 静默降级
-            self.logger.warning(
+            logger.warning(
                 f"fetch_funding_rates failed ({e.__class__.__name__}): {e}. "
                 "Degrading to empty funding rates."
             )
